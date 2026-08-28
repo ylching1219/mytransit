@@ -22,6 +22,7 @@ abstract class LocationService {
   Future<LocationStatus> checkStatus();
   Future<bool> requestGps();
   Future<bool> requestPermission();
+  Future<LocationSnapshot> getCurrentLocation();
   Future<void> startTracking(void Function(LocationSnapshot) onLocation);
   Future<void> stopTracking();
 }

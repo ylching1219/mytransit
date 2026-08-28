@@ -1,24 +1,20 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
-import '../models/forecast.dart';
 import '../models/transit_models.dart';
 import '../services/database_adapter.dart';
 import '../services/location_service.dart';
-import '../services/profile_image_service.dart';
 import '../services/supabase_service.dart';
 import '../services/transit_data_service.dart';
-import '../services/weather_service.dart';
 
 class AppState extends ChangeNotifier {
   final DatabaseAdapter _database = createDatabaseAdapter();
-  final WeatherService _weatherService = WeatherService();
   final SupabaseService _supabaseService = SupabaseService();
   final LocationService _locationService = createLocationService();
-  final ProfileImageService _profileImageService = createProfileImageService();
   final TransitDataService _transitDataService = TransitDataService();
   final Uuid _uuid = const Uuid();
 
@@ -30,14 +26,20 @@ class AppState extends ChangeNotifier {
   bool _gpsEnabled = false;
   bool _permissionGranted = false;
   bool _trackingEnabled = false;
-  bool _weatherLoading = false;
-  String? _weatherError;
   String? _transitError;
   TransitRouteResult? _lastRoute;
+  TransitRouteResult? _nextRoute;
+  String? _journeyAlert;
+  int? _journeyRemainingStations;
+  bool _journeyArrived = false;
+  bool _journeyMonitoring = false;
+  int _lastReachedStationIndex = -1;
+  bool _journeyLocationRequestInFlight = false;
+  Timer? _journeyPollingTimer;
+  List<TransitRouteResult> _routeOptions = const [];
   String _profileName = 'Aina Koh';
   String _profileEmail = '';
-  String? _profileImagePath;
-  Forecast? _currentForecast;
+  String _preferredTransport = 'Bus, rail & walking';
   List<SavedPlace> _savedPlaces = const [];
   List<JourneyRecord> _recentJourneys = const [];
   List<LocationSnapshot> _locationHistory = const [];
@@ -49,14 +51,18 @@ class AppState extends ChangeNotifier {
   bool get gpsEnabled => _gpsEnabled;
   bool get permissionGranted => _permissionGranted;
   bool get trackingEnabled => _trackingEnabled;
-  bool get weatherLoading => _weatherLoading;
-  String? get weatherError => _weatherError;
   String? get transitError => _transitError;
   TransitRouteResult? get lastRoute => _lastRoute;
+  TransitRouteResult? get nextRoute => _nextRoute;
+  String? get journeyAlert => _journeyAlert;
+  int? get journeyRemainingStations => _journeyRemainingStations;
+  bool get journeyArrived => _journeyArrived;
+  bool get journeyMonitoring => _journeyMonitoring;
+  List<TransitRouteResult> get routeOptions =>
+      List.unmodifiable(_routeOptions.where(_matchesPreferredTransport));
   String get profileName => _profileName;
   String get profileEmail => _profileEmail;
-  String? get profileImagePath => _profileImagePath;
-  Forecast? get currentForecast => _currentForecast;
+  String get preferredTransport => _preferredTransport;
   List<SavedPlace> get savedPlaces => List.unmodifiable(_savedPlaces);
   List<JourneyRecord> get recentJourneys => List.unmodifiable(_recentJourneys);
   List<LocationSnapshot> get locationHistory =>
@@ -73,39 +79,19 @@ class AppState extends ChangeNotifier {
     _profileEmail = _isGuest
         ? ''
         : _preferences!.getString('profile_email') ?? '';
-    _profileImagePath = _preferences!.getString('profile_image_path');
+    _loadTravelPreferences();
     _notificationsEnabled =
         _preferences!.getBool('notifications_enabled') ?? true;
+    _database.setUserScope(
+      _isGuest ? 'guest' : _storageScopeForEmail(_profileEmail),
+    );
     _savedPlaces = _isGuest ? const [] : await _database.loadSavedPlaces();
-    _recentJourneys = await _database.loadJourneys();
-
-    if (_recentJourneys.isEmpty) {
-      _recentJourneys = [
-        JourneyRecord(
-          id: 'journey-1',
-          from: 'KL Sentral',
-          to: 'Pasar Seni',
-          service: 'KL Kelana Jaya',
-          durationMinutes: 12,
-          createdAt: DateTime.now().subtract(const Duration(hours: 2)),
-        ),
-        JourneyRecord(
-          id: 'journey-2',
-          from: 'Campus',
-          to: 'KL Sentral',
-          service: 'Bus B41',
-          durationMinutes: 26,
-          createdAt: DateTime.now().subtract(const Duration(days: 1)),
-        ),
-      ];
-      await _database.saveJourneys(_recentJourneys);
-    }
+    _recentJourneys = _isGuest ? const [] : await _database.loadJourneys();
 
     final status = await _locationService.checkStatus();
     _gpsEnabled = status.gpsEnabled;
     _permissionGranted = status.permissionGranted;
     notifyListeners();
-    unawaited(refreshWeather());
   }
 
   void selectTab(int index) {
@@ -114,33 +100,86 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<bool> planJourney({required String from, required String to}) async {
+  void markNextRoute(TransitRouteResult route) {
+    _nextRoute = route;
+    _journeyAlert = null;
+    _journeyRemainingStations = null;
+    _journeyArrived = false;
+    _lastReachedStationIndex = -1;
+    notifyListeners();
+    if (_notificationsEnabled) unawaited(_restartJourneyMonitoring());
+  }
+
+  void clearNextRoute() {
+    if (_nextRoute == null) return;
+    _nextRoute = null;
+    _journeyAlert = null;
+    _journeyRemainingStations = null;
+    _journeyArrived = false;
+    _lastReachedStationIndex = -1;
+    unawaited(stopJourneyMonitoring());
+    notifyListeners();
+  }
+
+  bool isNextRoute(TransitRouteResult route) {
+    final selected = _nextRoute;
+    if (selected == null) return false;
+    return selected.fromStopId == route.fromStopId &&
+        selected.toStopId == route.toStopId &&
+        selected.serviceName == route.serviceName &&
+        selected.departureTime == route.departureTime;
+  }
+
+  Future<bool> planJourney({
+    required String from,
+    required String to,
+    int? departureAfterSeconds,
+    int? departureBeforeSeconds,
+    bool recordRecent = true,
+  }) async {
     if (from.trim().isEmpty || to.trim().isEmpty) return false;
     _isSearching = true;
     _transitError = null;
+    _lastRoute = null;
+    _routeOptions = const [];
     notifyListeners();
     try {
-      final route = await _transitDataService.findRoute(
+      final allRoutes = await _transitDataService.findRoutes(
         from: from,
         to: to,
+        departureAfterSeconds: departureAfterSeconds,
+        departureBeforeSeconds: departureBeforeSeconds,
       );
-      if (route == null) {
+      if (allRoutes.isEmpty) {
         _transitError = 'No direct route was found for these stops.';
         return false;
       }
 
+      final routes = allRoutes
+          .where(_matchesPreferredTransport)
+          .toList(growable: false);
+      if (routes.isEmpty) {
+        _transitError =
+            'No ${_preferredTransport.toLowerCase()} route was found for this journey.';
+        return false;
+      }
+
+      _routeOptions = routes;
+      final route = routes.first;
       _lastRoute = route;
-      final journey = JourneyRecord(
-        id: _uuid.v4(),
-        from: route.fromStopName,
-        to: route.toStopName,
-        service: route.serviceName,
-        durationMinutes: route.durationMinutes,
-        createdAt: DateTime.now(),
-      );
-      _recentJourneys = [journey, ..._recentJourneys].take(10).toList();
-      await _database.saveJourneys(_recentJourneys);
-      await _syncJourneysToCloud();
+      if (recordRecent) {
+        final journey = JourneyRecord(
+          id: _uuid.v4(),
+          from: route.fromStopName,
+          to: route.toStopName,
+          service: route.serviceName,
+          durationMinutes: route.durationMinutes,
+          createdAt: DateTime.now(),
+        );
+        _recentJourneys = [journey, ..._recentJourneys].take(10).toList();
+        await _database.saveJourneys(_recentJourneys);
+        await _syncJourneysToCloud();
+      }
       return true;
     } catch (error) {
       _transitError = error is TransitDataException
@@ -164,6 +203,17 @@ class AppState extends ChangeNotifier {
       subtitle: 'LRT Kelana Jaya · Saved route',
     );
     _savedPlaces = [place, ..._savedPlaces].take(20).toList();
+    await _database.saveSavedPlaces(_savedPlaces);
+    await _syncSavedPlacesToCloud();
+    notifyListeners();
+    return true;
+  }
+
+  Future<bool> removeFavoriteRoute(String id) async {
+    if (_isGuest) return false;
+    final updated = _savedPlaces.where((place) => place.id != id).toList();
+    if (updated.length == _savedPlaces.length) return false;
+    _savedPlaces = updated;
     await _database.saveSavedPlaces(_savedPlaces);
     await _syncSavedPlacesToCloud();
     notifyListeners();
@@ -242,7 +292,10 @@ class AppState extends ChangeNotifier {
     _isGuest = false;
     _profileName = name;
     _profileEmail = email;
+    _loadTravelPreferences();
+    _database.setUserScope(_storageScopeForEmail(email));
     _savedPlaces = await _database.loadSavedPlaces();
+    _recentJourneys = await _database.loadJourneys();
     await _preferences?.setBool('auth_signed_in', true);
     await _preferences?.setString('profile_name', name);
     await _preferences?.setString('profile_email', email);
@@ -254,29 +307,82 @@ class AppState extends ChangeNotifier {
     _isGuest = true;
     _profileName = 'Guest';
     _profileEmail = '';
+    _loadTravelPreferences();
     _savedPlaces = const [];
+    _recentJourneys = const [];
+    _lastRoute = null;
+    _routeOptions = const [];
+    _database.setUserScope('guest');
+    _nextRoute = null;
+    _journeyAlert = null;
+    _journeyRemainingStations = null;
+    _journeyArrived = false;
+    _lastReachedStationIndex = -1;
+    await stopJourneyMonitoring();
     await _preferences?.setBool('auth_signed_in', false);
     notifyListeners();
   }
 
-  Future<void> refreshWeather() async {
-    _weatherLoading = true;
-    _weatherError = null;
+  String _storageScopeForEmail(String email) {
+    return email.trim().toLowerCase();
+  }
+
+  void _loadTravelPreferences() {
+    final scope = _isGuest ? 'guest' : _storageScopeForEmail(_profileEmail);
+    const defaultTransport = 'Bus, rail & walking';
+    const supportedTransports = {
+      defaultTransport,
+      'Rail + walking',
+      'Bus + walking',
+    };
+    final storedTransport = _preferences?.getString('travel_transport_$scope');
+    _preferredTransport = supportedTransports.contains(storedTransport)
+        ? storedTransport!
+        : defaultTransport;
+  }
+
+  Future<void> updatePreferredTransport(String preferredTransport) async {
+    _preferredTransport = preferredTransport;
+    final scope = _isGuest ? 'guest' : _storageScopeForEmail(_profileEmail);
+    await _preferences?.setString(
+      'travel_transport_$scope',
+      _preferredTransport,
+    );
     notifyListeners();
-    try {
-      final results = await _weatherService.fetchForecast('St009');
-      _currentForecast = results.isEmpty ? null : results.first;
-    } catch (_) {
-      _weatherError = 'Weather is unavailable right now.';
-    } finally {
-      _weatherLoading = false;
-      notifyListeners();
+  }
+
+  bool _matchesPreferredTransport(TransitRouteResult route) {
+    if (_preferredTransport == 'Bus, rail & walking') return true;
+
+    final modeNames = [
+      route.mode,
+      ...route.legs.map((leg) => leg.mode),
+    ].join(' ').toLowerCase();
+    final hasBus = modeNames.contains('bus');
+    final hasRail = RegExp(r'\b(lrt|mrt|rail|train)\b').hasMatch(modeNames);
+
+    switch (_preferredTransport) {
+      case 'Rail + walking':
+        return hasRail && !hasBus;
+      case 'Bus + walking':
+        return hasBus && !hasRail;
+      default:
+        return true;
     }
   }
 
   Future<void> setNotifications(bool enabled) async {
     _notificationsEnabled = enabled;
     await _preferences?.setBool('notifications_enabled', enabled);
+    if (!enabled) {
+      await stopJourneyMonitoring();
+      _journeyAlert = null;
+      _journeyRemainingStations = null;
+      _journeyArrived = false;
+      _lastReachedStationIndex = -1;
+    } else if (_nextRoute != null) {
+      unawaited(_restartJourneyMonitoring());
+    }
     notifyListeners();
   }
 
@@ -348,40 +454,31 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  Future<void> sendPasswordReset() async {
-    if (_isGuest || _profileEmail.isEmpty) {
-      throw const FormatException('Sign in with an email address first.');
-    }
-    if (!_supabaseService.isConfigured) {
-      throw const FormatException(
-        'Use the local reset form when Supabase is not configured.',
-      );
-    }
-    await _supabaseService.sendPasswordReset(email: _profileEmail);
-  }
-
-  Future<void> updatePassword({required String newPassword}) async {
+  Future<void> updatePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
     if (_isGuest) {
       throw const FormatException('Sign in before changing your password.');
+    }
+    if (currentPassword.isEmpty) {
+      throw const FormatException('Enter your current password.');
     }
     if (newPassword.length < 6) {
       throw const FormatException('Use at least 6 characters.');
     }
     if (_supabaseService.isConfigured) {
-      throw const FormatException(
-        'Use the password reset link sent to your email.',
+      await _supabaseService.updatePassword(
+        currentPassword: currentPassword,
+        newPassword: newPassword,
       );
+      return;
+    }
+    final storedPassword = _preferences?.getString('account_password');
+    if (storedPassword != currentPassword) {
+      throw const FormatException('Current password is incorrect.');
     }
     await _preferences?.setString('account_password', newPassword);
-  }
-
-  Future<String?> pickProfileImage() async {
-    final imagePath = await _profileImageService.pickAndPersist();
-    if (imagePath == null) return null;
-    _profileImagePath = imagePath;
-    await _preferences?.setString('profile_image_path', imagePath);
-    notifyListeners();
-    return imagePath;
   }
 
   Future<void> clearJourneys() async {
@@ -400,6 +497,216 @@ class AppState extends ChangeNotifier {
     _permissionGranted = await _locationService.requestPermission();
     notifyListeners();
   }
+
+  Future<LocationSnapshot?> getCurrentLocation() async {
+    if (!_permissionGranted) await requestLocationPermission();
+    if (!_gpsEnabled) await requestGps();
+    if (!_permissionGranted || !_gpsEnabled) return null;
+
+    final snapshot = await _locationService.getCurrentLocation();
+    if (snapshot.latitude == null || snapshot.longitude == null) return null;
+    _locationHistory = [snapshot, ..._locationHistory].take(20).toList();
+    notifyListeners();
+    return snapshot;
+  }
+
+  Future<List<NearbyTransitStop>> findNearbyTransitStops({
+    required double latitude,
+    required double longitude,
+    double maxDistanceMeters = 1500,
+    int limit = 8,
+  }) {
+    return _transitDataService.findNearbyStops(
+      latitude: latitude,
+      longitude: longitude,
+      maxDistanceMeters: maxDistanceMeters,
+      limit: limit,
+    );
+  }
+
+  Future<List<TransitPlaceSuggestion>> searchTransitSuggestions({
+    required String query,
+  }) {
+    return _transitDataService.searchPlaceSuggestions(query: query);
+  }
+
+  void clearJourneyAlert() {
+    if (_journeyAlert == null) return;
+    _journeyAlert = null;
+    notifyListeners();
+  }
+
+  Future<void> startJourneyMonitoring() async {
+    if (_nextRoute == null || !_notificationsEnabled || _journeyMonitoring) {
+      return;
+    }
+
+    if (!_permissionGranted) {
+      _permissionGranted = await _locationService.requestPermission();
+    }
+    if (!_gpsEnabled) {
+      _gpsEnabled = await _locationService.requestGps();
+    }
+    if (!_permissionGranted || !_gpsEnabled) {
+      _journeyAlert =
+          'Allow location access to receive station arrival alerts.';
+      notifyListeners();
+      return;
+    }
+
+    try {
+      final initialLocation = await _locationService.getCurrentLocation();
+      _handleJourneyLocation(initialLocation);
+      if (_journeyArrived || _nextRoute == null) return;
+
+      if (kIsWeb) {
+        _journeyPollingTimer = Timer.periodic(
+          const Duration(seconds: 10),
+          (_) => unawaited(_pollJourneyLocation()),
+        );
+      } else {
+        await _locationService.startTracking(_handleJourneyLocation);
+      }
+      _journeyMonitoring = true;
+      notifyListeners();
+    } catch (_) {
+      _journeyAlert = 'Could not start location alerts for this journey.';
+      notifyListeners();
+    }
+  }
+
+  Future<void> stopJourneyMonitoring() async {
+    _journeyPollingTimer?.cancel();
+    _journeyPollingTimer = null;
+    await _locationService.stopTracking();
+    if (!_journeyMonitoring) return;
+    _journeyMonitoring = false;
+    notifyListeners();
+  }
+
+  Future<void> _restartJourneyMonitoring() async {
+    await stopJourneyMonitoring();
+    if (_nextRoute != null && _notificationsEnabled) {
+      await startJourneyMonitoring();
+    }
+  }
+
+  Future<void> _pollJourneyLocation() async {
+    if (_journeyLocationRequestInFlight || _nextRoute == null) return;
+    _journeyLocationRequestInFlight = true;
+    try {
+      final snapshot = await _locationService.getCurrentLocation();
+      _handleJourneyLocation(snapshot);
+    } catch (_) {
+      // Keep the last known progress when a single location read fails.
+    } finally {
+      _journeyLocationRequestInFlight = false;
+    }
+  }
+
+  void _handleJourneyLocation(LocationSnapshot snapshot) {
+    if (_nextRoute == null ||
+        snapshot.latitude == null ||
+        snapshot.longitude == null) {
+      return;
+    }
+    _locationHistory = [snapshot, ..._locationHistory].take(20).toList();
+    _updateJourneyProgress(snapshot);
+    notifyListeners();
+  }
+
+  void _updateJourneyProgress(LocationSnapshot snapshot) {
+    final route = _nextRoute;
+    if (route == null ||
+        snapshot.latitude == null ||
+        snapshot.longitude == null) {
+      return;
+    }
+    final stations = _stationsForRoute(route);
+    if (stations.isEmpty) return;
+
+    var nearestIndex = -1;
+    var nearestDistance = double.infinity;
+    for (var index = 0; index < stations.length; index++) {
+      final station = stations[index];
+      final distance = _distanceMeters(
+        snapshot.latitude!,
+        snapshot.longitude!,
+        station.latitude,
+        station.longitude,
+      );
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestIndex = index;
+      }
+    }
+
+    // GPS can drift, so only announce a station when the user is nearby.
+    if (nearestIndex < 0 || nearestDistance > 250) return;
+    if (nearestIndex <= _lastReachedStationIndex) return;
+
+    _lastReachedStationIndex = nearestIndex;
+    final remaining = math.max(0, stations.length - nearestIndex - 1);
+    _journeyRemainingStations = remaining;
+    final stationName = stations[nearestIndex].name;
+    final destinationName = stations.last.name;
+    if (remaining == 0) {
+      _journeyArrived = true;
+      _journeyAlert = 'Arrived at $destinationName.';
+      unawaited(stopJourneyMonitoring());
+    } else {
+      _journeyAlert = remaining == 1
+          ? 'Arrived at $stationName. 1 station remaining until $destinationName.'
+          : 'Arrived at $stationName. $remaining stations remaining until $destinationName.';
+    }
+  }
+
+  List<TransitStationPoint> _stationsForRoute(TransitRouteResult route) {
+    final stations = <TransitStationPoint>[];
+    final seen = <String>{};
+    for (final leg in route.legs) {
+      if (leg.isWalking) continue;
+      for (final station in leg.passingStations) {
+        final key = station.name.toLowerCase().trim();
+        if (seen.add(key)) stations.add(station);
+      }
+    }
+    if (stations.isNotEmpty) return stations;
+    return [
+      TransitStationPoint(
+        id: route.fromStopId,
+        name: route.fromStopName,
+        latitude: route.fromLatitude,
+        longitude: route.fromLongitude,
+      ),
+      TransitStationPoint(
+        id: route.toStopId,
+        name: route.toStopName,
+        latitude: route.toLatitude,
+        longitude: route.toLongitude,
+      ),
+    ];
+  }
+
+  static double _distanceMeters(
+    double latitudeA,
+    double longitudeA,
+    double latitudeB,
+    double longitudeB,
+  ) {
+    const earthRadiusMeters = 6371000.0;
+    final latitudeDelta = _radians(latitudeB - latitudeA);
+    final longitudeDelta = _radians(longitudeB - longitudeA);
+    final a =
+        math.pow(math.sin(latitudeDelta / 2), 2) +
+        math.cos(_radians(latitudeA)) *
+            math.cos(_radians(latitudeB)) *
+            math.pow(math.sin(longitudeDelta / 2), 2);
+    final clamped = a.clamp(0.0, 1.0).toDouble();
+    return earthRadiusMeters * 2 * math.asin(math.sqrt(clamped));
+  }
+
+  static double _radians(double degrees) => degrees * math.pi / 180;
 
   Future<void> startLocationTracking() async {
     if (!_gpsEnabled || !_permissionGranted) return;
@@ -421,6 +728,7 @@ class AppState extends ChangeNotifier {
   @override
   void dispose() {
     _transitDataService.dispose();
+    _journeyPollingTimer?.cancel();
     unawaited(_locationService.stopTracking());
     super.dispose();
   }

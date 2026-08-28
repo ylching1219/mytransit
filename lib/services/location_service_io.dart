@@ -29,6 +29,12 @@ class IoLocationService implements LocationService {
   }
 
   @override
+  Future<LocationSnapshot> getCurrentLocation() async {
+    final data = await _location.getLocation();
+    return LocationSnapshot(latitude: data.latitude, longitude: data.longitude);
+  }
+
+  @override
   Future<void> startTracking(void Function(LocationSnapshot) onLocation) async {
     await stopTracking();
     _subscription = _location.onLocationChanged.listen((data) {

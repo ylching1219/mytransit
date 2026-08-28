@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
 import 'auth_page.dart';
+import 'route_results_page.dart';
 import '../providers/app_state.dart';
 import '../services/transit_data_service.dart';
 import '../widgets/smart_move_widgets.dart';
@@ -21,18 +20,26 @@ class _PlanPageState extends State<PlanPage> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _fromController;
   late final TextEditingController _toController;
+  late final FocusNode _fromFocusNode;
+  late final FocusNode _toFocusNode;
+  TimeOfDay? _departureTime;
+  bool _findingNearby = false;
 
   @override
   void initState() {
     super.initState();
     _fromController = TextEditingController(text: 'Current location');
     _toController = TextEditingController(text: 'Pasar Seni');
+    _fromFocusNode = FocusNode();
+    _toFocusNode = FocusNode();
   }
 
   @override
   void dispose() {
     _fromController.dispose();
     _toController.dispose();
+    _fromFocusNode.dispose();
+    _toFocusNode.dispose();
     super.dispose();
   }
 
@@ -40,12 +47,213 @@ class _PlanPageState extends State<PlanPage> {
     return value == null || value.trim().isEmpty ? 'Enter a location' : null;
   }
 
+  Future<Iterable<TransitPlaceSuggestion>> _placeSuggestions(
+    TextEditingController controller,
+    String value,
+  ) async {
+    final query = value.trim();
+    if (query.length < 2) return const [];
+
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+    if (!mounted || controller.text.trim() != query) return const [];
+
+    final suggestions = await context.read<AppState>().searchTransitSuggestions(
+      query: query,
+    );
+    if (!mounted || controller.text.trim() != query) return const [];
+    return suggestions;
+  }
+
+  Future<void> _chooseDepartureTime() async {
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: _departureTime ?? _currentMalaysiaTime(),
+      helpText: 'Show departures after',
+    );
+    if (picked == null || !mounted) return;
+    setState(() => _departureTime = picked);
+  }
+
+  Future<bool> _chooseNearbyStartingStop() async {
+    if (_findingNearby) return false;
+    FocusScope.of(context).unfocus();
+    setState(() => _findingNearby = true);
+
+    try {
+      final state = context.read<AppState>();
+      final location = await state.getCurrentLocation();
+      if (!mounted) return false;
+      if (location?.latitude == null || location?.longitude == null) {
+        widget.onMessage(
+          'Turn on GPS and allow location access to find nearby stops.',
+        );
+        return false;
+      }
+
+      final nearbyStops = await state.findNearbyTransitStops(
+        latitude: location!.latitude!,
+        longitude: location.longitude!,
+      );
+      if (!mounted) return false;
+      if (nearbyStops.isEmpty) {
+        widget.onMessage('No transit stop was found within 1.5 km.');
+        return false;
+      }
+
+      final selected = await showModalBottomSheet<NearbyTransitStop>(
+        context: context,
+        backgroundColor: kBackground,
+        isScrollControlled: true,
+        builder: (sheetContext) {
+          return SafeArea(
+            child: SizedBox(
+              height: MediaQuery.sizeOf(sheetContext).height * .58,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'Choose a nearby stop',
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: kInk,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.of(sheetContext).pop(),
+                          icon: const Icon(Icons.close_rounded),
+                          color: kMutedDark,
+                        ),
+                      ],
+                    ),
+                    const Text(
+                      'Based on your current GPS location',
+                      style: TextStyle(fontSize: 10, color: kMutedDark),
+                    ),
+                    const SizedBox(height: 10),
+                    Expanded(
+                      child: ListView.separated(
+                        itemCount: nearbyStops.length,
+                        separatorBuilder: (_, index) =>
+                            const SizedBox(height: 7),
+                        itemBuilder: (_, index) {
+                          final stop = nearbyStops[index];
+                          return SoftCard(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 9,
+                            ),
+                            child: InkWell(
+                              onTap: () => Navigator.of(sheetContext).pop(stop),
+                              borderRadius: BorderRadius.circular(10),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    width: 30,
+                                    height: 30,
+                                    alignment: Alignment.center,
+                                    decoration: BoxDecoration(
+                                      color: stop.mode.contains('Bus')
+                                          ? kTealSoft
+                                          : kPurpleSoft,
+                                      borderRadius: BorderRadius.circular(9),
+                                    ),
+                                    child: Icon(
+                                      stop.mode.contains('Bus')
+                                          ? Icons.directions_bus_filled_rounded
+                                          : Icons.train_rounded,
+                                      size: 16,
+                                      color: stop.mode.contains('Bus')
+                                          ? kTeal
+                                          : kPurple,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 9),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          stop.name,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            fontSize: 11,
+                                            color: kInk,
+                                            fontWeight: FontWeight.w900,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          '${stop.mode} · ${_formatDistance(stop.distanceMeters)} away',
+                                          style: const TextStyle(
+                                            fontSize: 9,
+                                            color: kMutedDark,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const Icon(
+                                    Icons.chevron_right_rounded,
+                                    size: 18,
+                                    color: kMuted,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      );
+      if (!mounted || selected == null) return false;
+      setState(() => _fromController.text = selected.name);
+      return true;
+    } catch (error) {
+      if (mounted) {
+        widget.onMessage(
+          error is TransitDataException
+              ? error.message
+              : 'Could not read your current location.',
+        );
+      }
+      return false;
+    } finally {
+      if (mounted) setState(() => _findingNearby = false);
+    }
+  }
+
   Future<void> _findRoutes() async {
+    if (_fromController.text.trim().toLowerCase() == 'current location') {
+      final selected = await _chooseNearbyStartingStop();
+      if (!selected || !mounted) return;
+    }
     if (!(_formKey.currentState?.validate() ?? false)) return;
     final state = context.read<AppState>();
+    final departureTime = _departureTime;
     final found = await state.planJourney(
       from: _fromController.text,
       to: _toController.text,
+      departureAfterSeconds: departureTime == null
+          ? null
+          : departureTime.hour * 60 * 60 + departureTime.minute * 60,
+      departureBeforeSeconds: departureTime == null
+          ? null
+          : departureTime.hour * 60 * 60 + departureTime.minute * 60 + 30 * 60,
     );
     if (!mounted) return;
     if (!found) {
@@ -54,12 +262,29 @@ class _PlanPageState extends State<PlanPage> {
       );
       return;
     }
-    final route = state.lastRoute;
-    widget.onMessage(
-      route == null
-          ? 'Official route found and journey saved'
-          : '${route.serviceName} route found and journey saved',
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => RouteResultsPage(
+          from: _fromController.text.trim(),
+          to: _toController.text.trim(),
+          departureTimeLabel: departureTime == null
+              ? null
+              : _timeOfDayLabel(departureTime),
+        ),
+      ),
     );
+  }
+
+  String _timeOfDayLabel(TimeOfDay time) {
+    final hour = time.hourOfPeriod == 0 ? 12 : time.hourOfPeriod;
+    final minute = time.minute.toString().padLeft(2, '0');
+    final period = time.period == DayPeriod.am ? 'AM' : 'PM';
+    return '$hour:$minute $period';
+  }
+
+  TimeOfDay _currentMalaysiaTime() {
+    final now = malaysiaNow();
+    return TimeOfDay(hour: now.hour, minute: now.minute);
   }
 
   Future<void> _saveFavoriteRoute() async {
@@ -93,7 +318,6 @@ class _PlanPageState extends State<PlanPage> {
             AppHeader(
               title: 'Plan',
               avatarLabel: avatarInitials(state.profileName),
-              avatarImagePath: state.profileImagePath,
             ),
             const SizedBox(height: 22),
             Row(
@@ -135,7 +359,17 @@ class _PlanPageState extends State<PlanPage> {
               icon: Icons.my_location_rounded,
               iconColor: kTeal,
               iconBackground: kTealSoft,
-              subtitle: 'KL Sentral · GPS location',
+              subtitle: _findingNearby
+                  ? 'Finding the closest transit stops...'
+                  : _fromController.text.trim().toLowerCase() ==
+                        'current location'
+                  ? 'Tap the location icon to find a nearby stop'
+                  : 'Selected transit stop · tap the icon to change',
+              trailingIcon: Icons.my_location_rounded,
+              onTrailingTap: _chooseNearbyStartingStop,
+              focusNode: _fromFocusNode,
+              suggestionsBuilder: (value) =>
+                  _placeSuggestions(_fromController, value),
             ),
             const SizedBox(height: 7),
             RouteField(
@@ -146,54 +380,19 @@ class _PlanPageState extends State<PlanPage> {
               iconColor: const Color(0xFFD46C68),
               iconBackground: kPeach,
               trailingIcon: Icons.search_rounded,
+              focusNode: _toFocusNode,
+              suggestionsBuilder: (value) =>
+                  _placeSuggestions(_toController, value),
             ),
-            const SizedBox(height: 13),
-            const Row(
-              children: [
-                Icon(Icons.map_outlined, size: 14, color: kPurple),
-                SizedBox(width: 6),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Choose on map',
-                        style: TextStyle(
-                          fontSize: 9,
-                          color: kInk,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                      SizedBox(height: 2),
-                      Text(
-                        'Pick a bus stop or railway station',
-                        style: TextStyle(fontSize: 8.5, color: kMuted),
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(Icons.chevron_right_rounded, size: 16, color: kMuted),
-              ],
-            ),
-            const SizedBox(height: 8),
-            RouteMap(route: state.lastRoute),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                const Icon(Icons.location_on_outlined, size: 11, color: kTeal),
-                const SizedBox(width: 3),
-                Text(
-                  state.lastRoute == null
-                      ? '2 nearby stations'
-                      : '${state.lastRoute!.stopsBetween} stops on official timetable',
-                  style: const TextStyle(fontSize: 8.5, color: kMuted),
-                ),
-                const Spacer(),
-                const Text(
-                  'Walking limit: 800 m',
-                  style: TextStyle(fontSize: 8.5, color: kMuted),
-                ),
-              ],
+            const SizedBox(height: 7),
+            DepartureTimeField(
+              timeLabel: _departureTime == null
+                  ? 'Any time'
+                  : _timeOfDayLabel(_departureTime!),
+              onTap: _chooseDepartureTime,
+              onClear: _departureTime == null
+                  ? null
+                  : () => setState(() => _departureTime = null),
             ),
             const SizedBox(height: 14),
             SizedBox(
@@ -273,6 +472,80 @@ class _PlanPageState extends State<PlanPage> {
   }
 }
 
+class DepartureTimeField extends StatelessWidget {
+  final String timeLabel;
+  final VoidCallback onTap;
+  final VoidCallback? onClear;
+
+  const DepartureTimeField({
+    required this.timeLabel,
+    required this.onTap,
+    this.onClear,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: SoftCard(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
+        child: Row(
+          children: [
+            Container(
+              width: 29,
+              height: 29,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: kYellow,
+                borderRadius: BorderRadius.circular(9),
+              ),
+              child: const Icon(
+                Icons.schedule_rounded,
+                size: 15,
+                color: Color(0xFFB08B2F),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('DEPART AT', style: KickerStyle.small),
+                  Text(
+                    timeLabel,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: kInk,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  Text(
+                    timeLabel == 'Any time'
+                        ? 'Show all scheduled routes'
+                        : 'Show scheduled routes within the next 30 minutes',
+                    style: TextStyle(fontSize: 8.5, color: kMuted),
+                  ),
+                ],
+              ),
+            ),
+            if (onClear != null)
+              IconButton(
+                onPressed: onClear,
+                icon: const Icon(Icons.close_rounded, size: 17),
+                color: kMutedDark,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              )
+            else
+              const Icon(Icons.keyboard_arrow_down_rounded, color: kMutedDark),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class RouteField extends StatelessWidget {
   final String label;
   final String? subtitle;
@@ -280,6 +553,10 @@ class RouteField extends StatelessWidget {
   final Color iconColor;
   final Color iconBackground;
   final IconData? trailingIcon;
+  final VoidCallback? onTrailingTap;
+  final FocusNode? focusNode;
+  final Future<Iterable<TransitPlaceSuggestion>> Function(String)?
+  suggestionsBuilder;
   final TextEditingController controller;
   final String? Function(String?)? validator;
 
@@ -291,6 +568,9 @@ class RouteField extends StatelessWidget {
     required this.iconBackground,
     this.subtitle,
     this.trailingIcon,
+    this.onTrailingTap,
+    this.focusNode,
+    this.suggestionsBuilder,
     this.validator,
     super.key,
   });
@@ -317,20 +597,11 @@ class RouteField extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(label, style: KickerStyle.small),
-                TextFormField(
+                _LocationInput(
                   controller: controller,
+                  focusNode: focusNode,
                   validator: validator,
-                  style: const TextStyle(
-                    fontSize: 10,
-                    color: kInk,
-                    fontWeight: FontWeight.w900,
-                  ),
-                  decoration: const InputDecoration(
-                    isDense: true,
-                    border: InputBorder.none,
-                    contentPadding: EdgeInsets.zero,
-                    errorStyle: TextStyle(fontSize: 8.5),
-                  ),
+                  suggestionsBuilder: suggestionsBuilder,
                 ),
                 if (subtitle != null)
                   Text(
@@ -341,158 +612,174 @@ class RouteField extends StatelessWidget {
             ),
           ),
           if (trailingIcon != null)
-            Icon(trailingIcon, size: 16, color: kMutedDark),
+            GestureDetector(
+              onTap: onTrailingTap,
+              child: Padding(
+                padding: const EdgeInsets.all(6),
+                child: Icon(trailingIcon, size: 16, color: kMutedDark),
+              ),
+            ),
         ],
       ),
     );
   }
 }
 
-class RouteMap extends StatelessWidget {
-  const RouteMap({this.route, super.key});
+class _LocationInput extends StatelessWidget {
+  const _LocationInput({
+    required this.controller,
+    required this.focusNode,
+    required this.validator,
+    required this.suggestionsBuilder,
+  });
 
-  final TransitRouteResult? route;
+  final TextEditingController controller;
+  final FocusNode? focusNode;
+  final String? Function(String?)? validator;
+  final Future<Iterable<TransitPlaceSuggestion>> Function(String)?
+  suggestionsBuilder;
 
-  static const klSentral = LatLng(3.1339, 101.6869);
-  static const pasarSeni = LatLng(3.1426, 101.6958);
+  TextStyle get _inputStyle =>
+      const TextStyle(fontSize: 10, color: kInk, fontWeight: FontWeight.w900);
+
+  InputDecoration get _inputDecoration => const InputDecoration(
+    isDense: true,
+    border: InputBorder.none,
+    contentPadding: EdgeInsets.zero,
+    errorStyle: TextStyle(fontSize: 8.5),
+  );
 
   @override
   Widget build(BuildContext context) {
-    final fromPoint = route == null
-        ? klSentral
-        : LatLng(route!.fromLatitude, route!.fromLongitude);
-    final toPoint = route == null
-        ? pasarSeni
-        : LatLng(route!.toLatitude, route!.toLongitude);
-    final center = LatLng(
-      (fromPoint.latitude + toPoint.latitude) / 2,
-      (fromPoint.longitude + toPoint.longitude) / 2,
-    );
-    final fromLabel = route?.fromStopName ?? 'KL Sentral';
-    final toLabel = route?.toStopName ?? 'Pasar Seni';
+    if (suggestionsBuilder == null) {
+      return TextFormField(
+        controller: controller,
+        validator: validator,
+        style: _inputStyle,
+        decoration: _inputDecoration,
+      );
+    }
 
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(11),
-      child: SizedBox(
-        height: 144,
-        width: double.infinity,
-        child: FlutterMap(
-          options: MapOptions(
-            initialCenter: center,
-            initialZoom: 13.7,
-            interactionOptions: InteractionOptions(flags: InteractiveFlag.none),
+    return Autocomplete<TransitPlaceSuggestion>(
+      textEditingController: controller,
+      focusNode: focusNode,
+      displayStringForOption: (option) => option.title,
+      optionsBuilder: (textEditingValue) =>
+          suggestionsBuilder!(textEditingValue.text),
+      onSelected: (option) {
+        controller.value = TextEditingValue(
+          text: option.title,
+          selection: TextSelection.collapsed(offset: option.title.length),
+        );
+      },
+      optionsMaxHeight: 210,
+      optionsViewBuilder: (context, onSelected, options) {
+        final optionList = options.toList();
+        return Align(
+          alignment: Alignment.topLeft,
+          child: Material(
+            color: kBackground,
+            elevation: 5,
+            borderRadius: BorderRadius.circular(10),
+            clipBehavior: Clip.antiAlias,
+            child: SizedBox(
+              width: MediaQuery.sizeOf(context).width - 30,
+              child: ListView.separated(
+                padding: const EdgeInsets.symmetric(vertical: 5),
+                shrinkWrap: true,
+                itemCount: optionList.length,
+                separatorBuilder: (_, index) =>
+                    const Divider(height: 1, indent: 44, endIndent: 10),
+                itemBuilder: (_, index) {
+                  final option = optionList[index];
+                  final isPlace = option.mode == 'Place';
+                  return InkWell(
+                    onTap: () => onSelected(option),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 8,
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 28,
+                            height: 28,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: isPlace ? kPeach : kPurpleSoft,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Icon(
+                              isPlace
+                                  ? Icons.place_outlined
+                                  : Icons.train_rounded,
+                              size: 15,
+                              color: isPlace
+                                  ? const Color(0xFFD46C68)
+                                  : kPurple,
+                            ),
+                          ),
+                          const SizedBox(width: 7),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  option.title,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 10,
+                                    color: kInk,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  '${option.mode} · ${option.subtitle}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 8.5,
+                                    color: kMutedDark,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const Icon(
+                            Icons.north_east_rounded,
+                            size: 14,
+                            color: kMuted,
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
           ),
-          children: [
-            TileLayer(
-              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-              userAgentPackageName: 'com.example.mytransit',
-              maxZoom: 19,
-            ),
-            PolylineLayer(
-              polylines: [
-                Polyline(
-                  points: [fromPoint, toPoint],
-                  color: kTeal,
-                  strokeWidth: 3,
-                ),
-              ],
-            ),
-            MarkerLayer(
-              markers: [
-                Marker(
-                  point: fromPoint,
-                  width: 90,
-                  height: 34,
-                  child: MapPin(
-                    label: fromLabel,
-                    color: kTeal,
-                    alignRight: false,
-                  ),
-                ),
-                Marker(
-                  point: toPoint,
-                  width: 90,
-                  height: 34,
-                  child: MapPin(
-                    label: toLabel,
-                    color: Color(0xFFD46C68),
-                    alignRight: true,
-                  ),
-                ),
-              ],
-            ),
-            RichAttributionWidget(
-              attributions: [TextSourceAttribution('OpenStreetMap')],
-            ),
-          ],
-        ),
-      ),
+        );
+      },
+      fieldViewBuilder: (context, fieldController, focusNode, onSubmitted) {
+        return TextFormField(
+          controller: fieldController,
+          focusNode: focusNode,
+          validator: validator,
+          onFieldSubmitted: (_) => onSubmitted(),
+          style: _inputStyle,
+          decoration: _inputDecoration,
+        );
+      },
     );
   }
 }
 
-class MapPin extends StatelessWidget {
-  final String label;
-  final Color color;
-  final bool alignRight;
-
-  const MapPin({
-    required this.label,
-    required this.color,
-    required this.alignRight,
-    super.key,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        if (!alignRight)
-          Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(
-              color: Colors.white,
-              shape: BoxShape.circle,
-              border: Border.all(color: color, width: 2),
-            ),
-          ),
-
-        if (!alignRight) const SizedBox(width: 4),
-
-        Flexible(
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: .92),
-              borderRadius: BorderRadius.circular(5),
-            ),
-            child: Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 8,
-                color: color,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
-          ),
-        ),
-
-        if (alignRight) const SizedBox(width: 4),
-
-        if (alignRight)
-          Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(
-              color: Colors.white,
-              shape: BoxShape.circle,
-              border: Border.all(color: color, width: 2),
-            ),
-          ),
-      ],
-    );
+String _formatDistance(double distanceMeters) {
+  if (distanceMeters >= 1000) {
+    return '${(distanceMeters / 1000).toStringAsFixed(1)} km';
   }
+  return '${distanceMeters.round()} m';
 }

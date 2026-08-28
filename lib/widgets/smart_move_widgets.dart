@@ -2,8 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import 'avatar_image.dart';
-
 const kInk = Color(0xFF193140);
 const kMuted = Color(0xFF7E9299);
 const kMutedDark = Color(0xFF60767D);
@@ -30,13 +28,11 @@ class AppHeader extends StatefulWidget {
   final String title;
   final String? greetingName;
   final String avatarLabel;
-  final String? avatarImagePath;
 
   const AppHeader({
     required this.title,
     this.greetingName,
     this.avatarLabel = 'AK',
-    this.avatarImagePath,
     super.key,
   });
 
@@ -106,11 +102,7 @@ class _AppHeaderState extends State<AppHeader> {
       padding: const EdgeInsets.fromLTRB(7, 17, 7, 0),
       child: Row(
         children: [
-          AvatarChip(
-            size: 31,
-            label: widget.avatarLabel,
-            imagePath: widget.avatarImagePath,
-          ),
+          AvatarChip(size: 31, label: widget.avatarLabel),
           const SizedBox(width: 8),
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -145,14 +137,8 @@ class _AppHeaderState extends State<AppHeader> {
 class AvatarChip extends StatelessWidget {
   final double size;
   final String label;
-  final String? imagePath;
 
-  const AvatarChip({
-    this.size = 32,
-    this.label = 'AK',
-    this.imagePath,
-    super.key,
-  });
+  const AvatarChip({this.size = 32, this.label = 'AK', super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -172,16 +158,14 @@ class AvatarChip extends StatelessWidget {
           ),
         ],
       ),
-      child: imagePath == null
-          ? Text(
-              label,
-              style: TextStyle(
-                fontSize: size * .27,
-                color: kInk,
-                fontWeight: FontWeight.w900,
-              ),
-            )
-          : ClipOval(child: profileImage(imagePath!)),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: size * .27,
+          color: kInk,
+          fontWeight: FontWeight.w900,
+        ),
+      ),
     );
   }
 }

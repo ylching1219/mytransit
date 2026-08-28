@@ -4,8 +4,6 @@
 <dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>MyTransitAssist uses your location to estimate walking time and find nearby transit.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>MyTransitAssist uses your photos for an optional profile picture.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

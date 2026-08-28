@@ -47,9 +47,7 @@ class SupabaseService {
       'name': cleanName,
       'email': signedInEmail,
     });
-    await _client.auth.updateUser(
-      UserAttributes(data: {'name': cleanName}),
-    );
+    await _client.auth.updateUser(UserAttributes(data: {'name': cleanName}));
   }
 
   User _requireUser() {
@@ -76,11 +74,7 @@ class SupabaseService {
         .eq('user_id', user.id)
         .order('created_at', ascending: false);
     return rows
-        .map(
-          (row) => SavedPlace.fromMap(
-            Map<String, Object?>.from(row as Map),
-          ),
-        )
+        .map((row) => SavedPlace.fromMap(Map<String, Object?>.from(row as Map)))
         .toList();
   }
 
@@ -90,19 +84,21 @@ class SupabaseService {
       await _client.from('saved_routes').delete().eq('user_id', user.id);
       return;
     }
-    await _client.from('saved_routes').upsert(
-      places
-          .map(
-            (place) => {
-              'id': place.id,
-              'user_id': user.id,
-              'title': place.title,
-              'subtitle': place.subtitle,
-            },
-          )
-          .toList(),
-      onConflict: 'id',
-    );
+    await _client
+        .from('saved_routes')
+        .upsert(
+          places
+              .map(
+                (place) => {
+                  'id': place.id,
+                  'user_id': user.id,
+                  'title': place.title,
+                  'subtitle': place.subtitle,
+                },
+              )
+              .toList(),
+          onConflict: 'id',
+        );
   }
 
   Future<List<JourneyRecord>> loadJourneys() async {
@@ -116,9 +112,7 @@ class SupabaseService {
         .order('created_at', ascending: false);
     return rows
         .map(
-          (row) => JourneyRecord.fromMap(
-            Map<String, Object?>.from(row as Map),
-          ),
+          (row) => JourneyRecord.fromMap(Map<String, Object?>.from(row as Map)),
         )
         .toList();
   }
@@ -129,30 +123,29 @@ class SupabaseService {
       await _client.from('journeys').delete().eq('user_id', user.id);
       return;
     }
-    await _client.from('journeys').upsert(
-      journeys
-          .map(
-            (journey) => {
-              'id': journey.id,
-              'user_id': user.id,
-              'from_location': journey.from,
-              'to_location': journey.to,
-              'service': journey.service,
-              'duration_minutes': journey.durationMinutes,
-              'created_at': journey.createdAt.toIso8601String(),
-            },
-          )
-          .toList(),
-      onConflict: 'id',
-    );
+    await _client
+        .from('journeys')
+        .upsert(
+          journeys
+              .map(
+                (journey) => {
+                  'id': journey.id,
+                  'user_id': user.id,
+                  'from_location': journey.from,
+                  'to_location': journey.to,
+                  'service': journey.service,
+                  'duration_minutes': journey.durationMinutes,
+                  'created_at': journey.createdAt.toIso8601String(),
+                },
+              )
+              .toList(),
+          onConflict: 'id',
+        );
   }
 
   Future<void> signIn({required String email, required String password}) async {
     if (!isConfigured) return;
-    await _client.auth.signInWithPassword(
-      email: email,
-      password: password,
-    );
+    await _client.auth.signInWithPassword(email: email, password: password);
   }
 
   Future<bool> signUp({
@@ -188,8 +181,25 @@ class SupabaseService {
     await _client.auth.signOut();
   }
 
-  Future<void> sendPasswordReset({required String email}) async {
-    if (!isConfigured) return;
-    await _client.auth.resetPasswordForEmail(email);
+  Future<void> updatePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    final user = _requireUser();
+    final email = user.email?.trim();
+    if (email == null || email.isEmpty) {
+      throw const FormatException('Your account email is unavailable.');
+    }
+
+    try {
+      await _client.auth.signInWithPassword(
+        email: email,
+        password: currentPassword,
+      );
+    } on AuthException {
+      throw const FormatException('Current password is incorrect.');
+    }
+
+    await _client.auth.updateUser(UserAttributes(password: newPassword));
   }
 }

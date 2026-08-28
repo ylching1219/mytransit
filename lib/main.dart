@@ -5,6 +5,7 @@ import 'pages/home_page.dart';
 import 'pages/plan_page.dart';
 import 'pages/profile_page.dart';
 import 'pages/saved_page.dart';
+import 'pages/service_alerts_page.dart';
 import 'providers/app_state.dart';
 import 'services/supabase_service.dart';
 import 'widgets/smart_move_widgets.dart';
@@ -20,14 +21,70 @@ Future<void> main() async {
   );
 }
 
-class SmartMoveApp extends StatelessWidget {
+class SmartMoveApp extends StatefulWidget {
   const SmartMoveApp({super.key});
+
+  @override
+  State<SmartMoveApp> createState() => _SmartMoveAppState();
+}
+
+class _SmartMoveAppState extends State<SmartMoveApp> {
+  final _messengerKey = GlobalKey<ScaffoldMessengerState>();
+  AppState? _observedState;
+  String? _lastShownJourneyAlert;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final state = context.read<AppState>();
+    if (_observedState == state) return;
+    _observedState?.removeListener(_onAppStateChanged);
+    _observedState = state;
+    state.addListener(_onAppStateChanged);
+  }
+
+  void _onAppStateChanged() {
+    final state = _observedState;
+    final alert = state?.journeyAlert;
+    if (state == null || alert == null) {
+      _lastShownJourneyAlert = null;
+      return;
+    }
+    if (alert == _lastShownJourneyAlert) return;
+    _lastShownJourneyAlert = alert;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final messenger = _messengerKey.currentState;
+      if (messenger == null) {
+        _lastShownJourneyAlert = null;
+        return;
+      }
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(alert),
+            backgroundColor: kInk,
+            duration: const Duration(seconds: 5),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      state.clearJourneyAlert();
+    });
+  }
+
+  @override
+  void dispose() {
+    _observedState?.removeListener(_onAppStateChanged);
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'MyTransitAssist',
+      scaffoldMessengerKey: _messengerKey,
       theme: ThemeData(
         useMaterial3: true,
         scaffoldBackgroundColor: kBackground,
@@ -73,6 +130,13 @@ class SmartMoveShell extends StatelessWidget {
           children: [
             HomePage(
               onPlanTap: () => state.selectTab(1),
+              onSavedTap: () => state.selectTab(2),
+              onHistoryTap: () => state.selectTab(2),
+              onAlertsTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const ServiceAlertsPage()),
+                );
+              },
               onMessage: (message) => _showMessage(context, message),
             ),
             PlanPage(onMessage: (message) => _showMessage(context, message)),

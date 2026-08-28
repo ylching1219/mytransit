@@ -14,9 +14,9 @@ class ProfilePage extends StatefulWidget {
 
 class _ProfilePageState extends State<ProfilePage> {
   Future<void> _editProfile() async {
-    final updated = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(builder: (_) => const EditProfilePage()),
-    );
+    final updated = await Navigator.of(
+      context,
+    ).push<bool>(MaterialPageRoute(builder: (_) => const EditProfilePage()));
     if (updated == true && mounted) {
       ScaffoldMessenger.of(
         context,
@@ -25,48 +25,37 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Future<void> _resetPassword() async {
-    final state = context.read<AppState>();
-    if (state.supabaseConfigured) {
-      final messenger = ScaffoldMessenger.of(context);
-      try {
-        await state.sendPasswordReset();
-        if (!mounted) return;
-        messenger.showSnackBar(
-          SnackBar(
-            content: Text('Password reset link sent to ${state.profileEmail}.'),
-          ),
-        );
-      } catch (error) {
-        if (!mounted) return;
-        messenger.showSnackBar(
-          SnackBar(content: Text('Could not send reset link: $error')),
-        );
-      }
-      return;
-    }
-
-    final updated = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(builder: (_) => const ResetPasswordPage()),
-    );
+    final updated = await Navigator.of(
+      context,
+    ).push<bool>(MaterialPageRoute(builder: (_) => const ResetPasswordPage()));
     if (updated == true && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Password updated locally.')),
+        const SnackBar(content: Text('Password updated successfully.')),
       );
     }
   }
 
-  Future<void> _pickImage() async {
-    final path = await context.read<AppState>().pickProfileImage();
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          path == null
-              ? 'Image picker is available on Android and iOS.'
-              : 'Profile photo saved to app storage.',
+  Future<void> _choosePreferredTransport() async {
+    final state = context.read<AppState>();
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: kBackground,
+      builder: (sheetContext) => SafeArea(
+        child: _PreferenceOptions<String>(
+          title: 'Preferred transport',
+          selected: state.preferredTransport,
+          options: const [
+            'Bus, rail & walking',
+            'Rail + walking',
+            'Bus + walking',
+          ],
+          label: (value) => value,
+          onSelected: (value) => Navigator.of(sheetContext).pop(value),
         ),
       ),
     );
+    if (!mounted || selected == null) return;
+    await state.updatePreferredTransport(selected);
   }
 
   @override
@@ -80,7 +69,6 @@ class _ProfilePageState extends State<ProfilePage> {
           AppHeader(
             title: 'Profile',
             avatarLabel: avatarInitials(state.profileName),
-            avatarImagePath: state.profileImagePath,
           ),
           const SizedBox(height: 22),
           PageTitle(
@@ -89,7 +77,6 @@ class _ProfilePageState extends State<ProfilePage> {
             trailing: AvatarChip(
               size: 29,
               label: avatarInitials(state.profileName),
-              imagePath: state.profileImagePath,
             ),
           ),
           const SizedBox(height: 17),
@@ -142,13 +129,9 @@ class _ProfilePageState extends State<ProfilePage> {
                 children: [
                   Row(
                     children: [
-                      GestureDetector(
-                        onTap: _pickImage,
-                        child: AvatarChip(
-                          size: 38,
-                          label: avatarInitials(state.profileName),
-                          imagePath: state.profileImagePath,
-                        ),
+                      AvatarChip(
+                        size: 38,
+                        label: avatarInitials(state.profileName),
                       ),
                       const SizedBox(width: 10),
                       Expanded(
@@ -198,22 +181,11 @@ class _ProfilePageState extends State<ProfilePage> {
               ),
             ),
           const SizedBox(height: 14),
-          const ProfileSetting(
+          ProfileSetting(
             icon: Icons.directions_transit_rounded,
             label: 'PREFERRED TRANSPORT',
-            value: 'Bus, rail & walking',
-          ),
-          const SizedBox(height: 7),
-          const ProfileSetting(
-            icon: Icons.directions_walk_rounded,
-            label: 'MAXIMUM WALKING DISTANCE',
-            value: '800 metres',
-          ),
-          const SizedBox(height: 7),
-          const ProfileSetting(
-            icon: Icons.accessibility_new_rounded,
-            label: 'ACCESSIBILITY',
-            value: 'Step-free routes preferred',
+            value: state.preferredTransport,
+            onTap: _choosePreferredTransport,
           ),
           const SizedBox(height: 12),
           SoftCard(
@@ -349,7 +321,10 @@ class ProfileActionButton extends StatelessWidget {
                       const SizedBox(height: 2),
                       Text(
                         subtitle,
-                        style: const TextStyle(fontSize: 8.5, color: kMutedDark),
+                        style: const TextStyle(
+                          fontSize: 8.5,
+                          color: kMutedDark,
+                        ),
                       ),
                     ],
                   ),
@@ -379,8 +354,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
   @override
   void initState() {
     super.initState();
-    _nameController =
-        TextEditingController(text: context.read<AppState>().profileName);
+    _nameController = TextEditingController(
+      text: context.read<AppState>().profileName,
+    );
   }
 
   @override
@@ -483,12 +459,14 @@ class ResetPasswordPage extends StatefulWidget {
 
 class _ResetPasswordPageState extends State<ResetPasswordPage> {
   final _formKey = GlobalKey<FormState>();
+  final _currentPasswordController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmController = TextEditingController();
   bool _saving = false;
 
   @override
   void dispose() {
+    _currentPasswordController.dispose();
     _passwordController.dispose();
     _confirmController.dispose();
     super.dispose();
@@ -499,6 +477,7 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
     setState(() => _saving = true);
     try {
       await context.read<AppState>().updatePassword(
+        currentPassword: _currentPasswordController.text,
         newPassword: _passwordController.text,
       );
       if (!mounted) return;
@@ -527,7 +506,7 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'Choose a new password',
+                    'Update your password',
                     style: TextStyle(
                       fontSize: 18,
                       color: kInk,
@@ -536,13 +515,25 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                   ),
                   const SizedBox(height: 7),
                   const Text(
-                    'Use at least 6 characters to keep your account secure.',
+                    'Enter your current password, then choose a new one.',
                     style: TextStyle(fontSize: 13, color: kMutedDark),
                   ),
                   const SizedBox(height: 20),
                   TextFormField(
-                    controller: _passwordController,
+                    controller: _currentPasswordController,
                     autofocus: true,
+                    obscureText: true,
+                    validator: (value) => value == null || value.isEmpty
+                        ? 'Enter your current password'
+                        : null,
+                    decoration: const InputDecoration(
+                      labelText: 'Current password',
+                      prefixIcon: Icon(Icons.lock_outline_rounded),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  TextFormField(
+                    controller: _passwordController,
                     obscureText: true,
                     validator: _passwordValidator,
                     decoration: const InputDecoration(
@@ -595,17 +586,19 @@ class ProfileSetting extends StatelessWidget {
   final IconData icon;
   final String label;
   final String value;
+  final VoidCallback? onTap;
 
   const ProfileSetting({
     required this.icon,
     required this.label,
     required this.value,
+    this.onTap,
     super.key,
   });
 
   @override
   Widget build(BuildContext context) {
-    return SoftCard(
+    final card = SoftCard(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
       child: Row(
         children: [
@@ -638,6 +631,58 @@ class ProfileSetting extends StatelessWidget {
             ),
           ),
           const Icon(Icons.chevron_right_rounded, size: 16, color: kMuted),
+        ],
+      ),
+    );
+    return onTap == null ? card : GestureDetector(onTap: onTap, child: card);
+  }
+}
+
+class _PreferenceOptions<T> extends StatelessWidget {
+  final String title;
+  final T selected;
+  final List<T> options;
+  final String Function(T value) label;
+  final ValueChanged<T> onSelected;
+
+  const _PreferenceOptions({
+    required this.title,
+    required this.selected,
+    required this.options,
+    required this.label,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 10),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 16,
+              color: kInk,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 7),
+          ...options.map(
+            (value) => ListTile(
+              onTap: () => onSelected(value),
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                value == selected
+                    ? Icons.radio_button_checked_rounded
+                    : Icons.radio_button_off_rounded,
+                color: value == selected ? kTeal : kMuted,
+              ),
+              title: Text(label(value)),
+            ),
+          ),
         ],
       ),
     );
