@@ -29,8 +29,9 @@ class _ServiceAlertsPageState extends State<ServiceAlertsPage> {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
+    final alerts = state.journeyAlertHistory;
     return Scaffold(
-      backgroundColor: kBackground,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(7, 0, 7, 18),
@@ -70,50 +71,92 @@ class _ServiceAlertsPageState extends State<ServiceAlertsPage> {
                 ],
               ),
               const SizedBox(height: 18),
-              SoftCard(
-                color: kTealSoft,
-                padding: const EdgeInsets.fromLTRB(13, 14, 13, 14),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      width: 38,
-                      height: 38,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: .72),
-                        borderRadius: BorderRadius.circular(11),
-                      ),
-                      child: const Icon(
+              if (alerts.isEmpty)
+                const SoftCard(
+                  color: kTealSoft,
+                  padding: EdgeInsets.fromLTRB(13, 14, 13, 14),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
                         Icons.check_circle_outline_rounded,
                         color: kTeal,
-                        size: 22,
+                        size: 25,
                       ),
-                    ),
-                    const SizedBox(width: 11),
-                    const Expanded(
-                      child: Column(
+                      SizedBox(width: 11),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'No recent journey alerts',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: kInk,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                            SizedBox(height: 4),
+                            Text(
+                              'Station arrival alerts will appear here when your next journey is active.',
+                              style: TextStyle(fontSize: 10, color: kMutedDark),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                )
+              else ...[
+                SectionHeading(
+                  title: 'Recent journey alerts',
+                  trailing: 'Clear',
+                  onTrailingTap: state.clearJourneyAlertHistory,
+                ),
+                const SizedBox(height: 8),
+                for (final alert in alerts)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 7),
+                    child: SoftCard(
+                      color: kYellow,
+                      padding: const EdgeInsets.fromLTRB(11, 10, 11, 10),
+                      child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            'No active service alerts',
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: kInk,
-                              fontWeight: FontWeight.w900,
-                            ),
+                          const Icon(
+                            Icons.notifications_active_outlined,
+                            color: Color(0xFFB08B2F),
+                            size: 20,
                           ),
-                          SizedBox(height: 4),
-                          Text(
-                            'There are no disruption notices to show right now.',
-                            style: TextStyle(fontSize: 10, color: kMutedDark),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  alert.message,
+                                  style: const TextStyle(
+                                    fontSize: 10,
+                                    color: kInk,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  _dateTimeLabel(alert.occurredAt),
+                                  style: const TextStyle(
+                                    fontSize: 8.5,
+                                    color: kMutedDark,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ],
                       ),
                     ),
-                  ],
-                ),
-              ),
+                  ),
+              ],
               const SizedBox(height: 12),
               SoftCard(
                 color: kPeach,
@@ -128,7 +171,7 @@ class _ServiceAlertsPageState extends State<ServiceAlertsPage> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Last checked ${_timeLabel(_lastChecked)}. New notices will appear here when the official alert feed provides them.',
+                        'Last checked ${_timeLabel(_lastChecked)}. Official disruption notices and journey alerts will appear here as they arrive.',
                         style: const TextStyle(fontSize: 9, color: kMutedDark),
                       ),
                     ),
@@ -147,5 +190,23 @@ class _ServiceAlertsPageState extends State<ServiceAlertsPage> {
     final minute = time.minute.toString().padLeft(2, '0');
     final period = time.hour >= 12 ? 'PM' : 'AM';
     return '$hour:$minute $period';
+  }
+
+  String _dateTimeLabel(DateTime time) {
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    return '${time.day} ${months[time.month - 1]} · ${_timeLabel(time)}';
   }
 }

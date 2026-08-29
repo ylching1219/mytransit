@@ -5,6 +5,7 @@ import '../providers/app_state.dart';
 import '../services/transit_data_service.dart';
 import '../widgets/smart_move_widgets.dart';
 import '../widgets/transit_route_map.dart';
+import 'live_tracking_page.dart';
 
 class RouteResultsPage extends StatefulWidget {
   final String from;
@@ -24,11 +25,13 @@ class RouteResultsPage extends StatefulWidget {
 
 class _RouteResultsPageState extends State<RouteResultsPage> {
   String _selectedMode = 'All';
+  String _selectedSort = 'Recommended';
 
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final routes = state.routeOptions;
+    final sortedRoutes = [...routes]..sort(_compareRoutes);
     const modes = ['Bus', 'LRT', 'MRT', 'Mixed'];
     final visibleModes = _selectedMode == 'All'
         ? modes
@@ -36,7 +39,7 @@ class _RouteResultsPageState extends State<RouteResultsPage> {
     final groupedRoutes = <String, Map<String, List<TransitRouteResult>>>{
       for (final mode in modes) mode: <String, List<TransitRouteResult>>{},
     };
-    for (final route in routes) {
+    for (final route in sortedRoutes) {
       final services = groupedRoutes.putIfAbsent(
         route.mode,
         () => <String, List<TransitRouteResult>>{},
@@ -45,7 +48,7 @@ class _RouteResultsPageState extends State<RouteResultsPage> {
     }
 
     return Scaffold(
-      backgroundColor: kBackground,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(7, 0, 7, 24),
@@ -177,6 +180,54 @@ class _RouteResultsPageState extends State<RouteResultsPage> {
                       ),
                 ],
               ),
+              const SizedBox(height: 12),
+              SectionHeading(
+                title: 'Prioritise routes by',
+                trailing: _selectedSort,
+              ),
+              const SizedBox(height: 7),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (final sort in [
+                    'Recommended',
+                    'Less stops',
+                    'Less time',
+                    'Less fare',
+                  ])
+                    GestureDetector(
+                      onTap: () => setState(() => _selectedSort = sort),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 7,
+                        ),
+                        decoration: BoxDecoration(
+                          color: _selectedSort == sort
+                              ? kTeal
+                              : appCardColor(context, Colors.white),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: _selectedSort == sort
+                                ? kTeal
+                                : appFieldBorder(context),
+                          ),
+                        ),
+                        child: Text(
+                          sort,
+                          style: TextStyle(
+                            fontSize: 9,
+                            color: _selectedSort == sort
+                                ? Colors.white
+                                : Theme.of(context).colorScheme.onSurface,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
               const SizedBox(height: 9),
               if (routes.isEmpty)
                 const SoftCard(
@@ -260,6 +311,39 @@ class _RouteResultsPageState extends State<RouteResultsPage> {
         ),
       ),
     );
+  }
+
+  int _compareRoutes(TransitRouteResult left, TransitRouteResult right) {
+    int result;
+    switch (_selectedSort) {
+      case 'Less stops':
+        result = left.stopsBetween.compareTo(right.stopsBetween);
+        if (result != 0) return result;
+        result = left.durationMinutes.compareTo(right.durationMinutes);
+        break;
+      case 'Less time':
+        result = left.durationMinutes.compareTo(right.durationMinutes);
+        if (result != 0) return result;
+        result = left.stopsBetween.compareTo(right.stopsBetween);
+        break;
+      case 'Less fare':
+        final leftFare = _fareAmount(left.fare);
+        final rightFare = _fareAmount(right.fare);
+        if (leftFare == null && rightFare != null) return 1;
+        if (leftFare != null && rightFare == null) return -1;
+        if (leftFare != null && rightFare != null) {
+          result = leftFare.compareTo(rightFare);
+          if (result != 0) return result;
+        }
+        result = left.durationMinutes.compareTo(right.durationMinutes);
+        break;
+      default:
+        result = 0;
+    }
+    if (result != 0) return result;
+    result = left.departureTime.compareTo(right.departureTime);
+    if (result != 0) return result;
+    return left.arrivalTime.compareTo(right.arrivalTime);
   }
 }
 
@@ -405,7 +489,7 @@ class RouteDetailPage extends StatelessWidget {
     final state = context.watch<AppState>();
     final isNextJourney = state.isNextRoute(route);
     return Scaffold(
-      backgroundColor: kBackground,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(7, 0, 7, 24),
@@ -512,31 +596,66 @@ class RouteDetailPage extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               if (isNextJourney)
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 11,
-                  ),
-                  decoration: BoxDecoration(
-                    color: kTealSoft,
-                    borderRadius: BorderRadius.circular(11),
-                    border: Border.all(color: kTeal),
-                  ),
-                  child: const Row(
-                    children: [
-                      Icon(Icons.check_circle_rounded, size: 18, color: kTeal),
-                      SizedBox(width: 8),
-                      Text(
-                        'This is your next journey',
-                        style: TextStyle(
-                          fontSize: 10,
-                          color: kTeal,
-                          fontWeight: FontWeight.w900,
+                Column(
+                  children: [
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 11,
+                      ),
+                      decoration: BoxDecoration(
+                        color: kTealSoft,
+                        borderRadius: BorderRadius.circular(11),
+                        border: Border.all(color: kTeal),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(
+                            Icons.check_circle_rounded,
+                            size: 18,
+                            color: kTeal,
+                          ),
+                          SizedBox(width: 8),
+                          Text(
+                            'This is your next journey',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: kTeal,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 40,
+                      child: FilledButton.icon(
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => LiveTrackingPage(route: route),
+                          ),
+                        ),
+                        icon: const Icon(Icons.my_location_rounded, size: 17),
+                        label: const Text(
+                          'Open live tracking',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: kTeal,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 )
               else
                 SizedBox(
@@ -657,6 +776,15 @@ String _fareLabel(TransitFare? fare) {
     return 'Adult from RM${fare.adult} · Zone-based bus fare';
   }
   return 'Cashless RM${fare.cashless} · Adult RM${fare.adult}';
+}
+
+double? _fareAmount(TransitFare? fare) {
+  if (fare == null) return null;
+  for (final value in [fare.adult, fare.cashless, fare.cash]) {
+    final amount = double.tryParse(value.replaceAll(RegExp(r'[^0-9.]'), ''));
+    if (amount != null) return amount;
+  }
+  return null;
 }
 
 String _fareDetailLabel(TransitFare? fare) {

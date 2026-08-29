@@ -123,6 +123,16 @@ class SupabaseService {
       await _client.from('journeys').delete().eq('user_id', user.id);
       return;
     }
+    final existingRows = await _client
+        .from('journeys')
+        .select('id')
+        .eq('user_id', user.id);
+    final existingIds = existingRows
+        .map((row) => (row as Map)['id']?.toString())
+        .whereType<String>()
+        .toSet();
+    final currentIds = journeys.map((journey) => journey.id).toSet();
+
     await _client
         .from('journeys')
         .upsert(
@@ -141,6 +151,16 @@ class SupabaseService {
               .toList(),
           onConflict: 'id',
         );
+
+    // Remove only rows that are no longer part of the capped local history,
+    // and do it after the current records have been uploaded successfully.
+    for (final staleId in existingIds.difference(currentIds)) {
+      await _client
+          .from('journeys')
+          .delete()
+          .eq('user_id', user.id)
+          .eq('id', staleId);
+    }
   }
 
   Future<void> signIn({required String email, required String password}) async {

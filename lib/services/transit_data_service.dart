@@ -66,6 +66,7 @@ class TransitJourneyLeg {
   final double toLongitude;
   final List<String> passingStops;
   final List<TransitStationPoint> passingStations;
+  final String? routeId;
 
   const TransitJourneyLeg({
     required this.mode,
@@ -85,6 +86,7 @@ class TransitJourneyLeg {
     required this.toLongitude,
     this.passingStops = const [],
     this.passingStations = const [],
+    this.routeId,
   });
 
   bool get isWalking => mode == 'Walk';
@@ -123,6 +125,7 @@ class TransitRouteResult {
   final double toLatitude;
   final double toLongitude;
   final List<TransitJourneyLeg> legs;
+  final String? routeId;
 
   const TransitRouteResult({
     required this.fromStopName,
@@ -141,6 +144,7 @@ class TransitRouteResult {
     required this.toLatitude,
     required this.toLongitude,
     this.legs = const [],
+    this.routeId,
   });
 
   TransitRouteResult copyWith({TransitFare? fare}) {
@@ -161,6 +165,7 @@ class TransitRouteResult {
       toLatitude: toLatitude,
       toLongitude: toLongitude,
       legs: legs,
+      routeId: routeId,
     );
   }
 }
@@ -243,28 +248,32 @@ class TransitDataService {
 
     // A typed value is often an area, mall, or landmark rather than an
     // exact GTFS stop name. Resolve it through the official MyRapid planner,
-    // then search the nearest stops in both the bus and rail feeds.
-    if (results.isEmpty && feeds.isNotEmpty) {
+    // then search the nearest stops in both the bus and rail feeds. These
+    // nearby stops are also needed to find a bus-to-rail transfer, even when
+    // a direct result was found first.
+    if (feeds.isNotEmpty) {
       final originStops = await _resolveStopCandidates(from, feeds);
       final destinationStops = await _resolveStopCandidates(to, feeds);
-      for (final source in feeds) {
-        for (final origin in originStops.take(6)) {
-          for (final destination in destinationStops.take(6)) {
-            results.addAll(
-              _findInFeed(
-                source.feed,
-                from: origin.name,
-                to: destination.name,
-                fallbackMode: source.fallbackMode,
-                departureAfterSeconds: departureAfterSeconds,
-                departureBeforeSeconds: departureBeforeSeconds,
-              ),
-            );
+      if (results.isEmpty) {
+        for (final source in feeds) {
+          for (final origin in originStops.take(6)) {
+            for (final destination in destinationStops.take(6)) {
+              results.addAll(
+                _findInFeed(
+                  source.feed,
+                  from: origin.name,
+                  to: destination.name,
+                  fallbackMode: source.fallbackMode,
+                  departureAfterSeconds: departureAfterSeconds,
+                  departureBeforeSeconds: departureBeforeSeconds,
+                ),
+              );
+            }
           }
         }
       }
 
-      if (results.isEmpty) {
+      if (originStops.isNotEmpty && destinationStops.isNotEmpty) {
         results.addAll(
           await _findMultimodalRoutes(
             from: from,
@@ -297,15 +306,7 @@ class TransitDataService {
       uniqueResults.putIfAbsent(key, () => result);
     }
     final sortedResults = uniqueResults.values.toList()
-      ..sort((left, right) {
-        final departure = _gtfsSeconds(
-          left.departureTime,
-        ).compareTo(_gtfsSeconds(right.departureTime));
-        if (departure != 0) return departure;
-        final service = left.serviceName.compareTo(right.serviceName);
-        if (service != 0) return service;
-        return left.durationMinutes.compareTo(right.durationMinutes);
-      });
+      ..sort(_compareJourneyResults);
 
     final resultsWithFares = <TransitRouteResult>[];
     for (final result in sortedResults) {
@@ -497,9 +498,8 @@ class TransitDataService {
     if (originStops.isEmpty || destinationStops.isEmpty) return const [];
 
     final journeys = <TransitRouteResult>[];
-    final journeyCombinationCounts = <String, int>{};
-    const maxJourneysPerCombination = 8;
-    const maxJourneys = 48;
+    const maxJourneysPerTransfer = 8;
+    const maxJourneys = 96;
     for (final origin in originStops.take(5)) {
       for (final destination in destinationStops.take(5)) {
         final transferPairs = _findTransferPairs(
@@ -508,6 +508,7 @@ class TransitDataService {
           destination: destination,
         );
         for (final pair in transferPairs.take(28)) {
+          var journeysForTransfer = 0;
           final originIds = _candidateIds(pair.firstSource.feed, origin);
           if (originIds.isEmpty) continue;
           final destinationIds = _candidateIds(
@@ -561,17 +562,16 @@ class TransitDataService {
                   secondRoute: secondRoute,
                   transferDistanceMeters: pair.distanceMeters,
                 );
-                final combination = journey.serviceName;
-                final combinationCount =
-                    journeyCombinationCounts[combination] ?? 0;
-                if (combinationCount >= maxJourneysPerCombination) continue;
-                journeyCombinationCounts[combination] = combinationCount + 1;
                 journeys.add(journey);
-                break;
+                journeysForTransfer++;
+                if (journeysForTransfer >= maxJourneysPerTransfer) break;
+                if (journeys.length >= maxJourneys) break;
               }
               if (journeys.length >= maxJourneys) break;
+              if (journeysForTransfer >= maxJourneysPerTransfer) break;
             }
             if (journeys.length >= maxJourneys) break;
+            if (journeysForTransfer >= maxJourneysPerTransfer) break;
           }
           if (journeys.length >= maxJourneys) break;
         }
@@ -591,11 +591,7 @@ class TransitDataService {
       ].join('|');
       unique.putIfAbsent(key, () => journey);
     }
-    return unique.values.toList()..sort(
-      (left, right) => _gtfsSeconds(
-        left.departureTime,
-      ).compareTo(_gtfsSeconds(right.departureTime)),
-    );
+    return unique.values.toList()..sort(_compareJourneyResults);
   }
 
   List<_TransferPair> _findTransferPairs({
@@ -820,6 +816,7 @@ class TransitDataService {
       fromLongitude: route.fromLongitude,
       toLatitude: route.toLatitude,
       toLongitude: route.toLongitude,
+      routeId: route.routeId,
     );
   }
 
@@ -848,6 +845,7 @@ class TransitDataService {
       fromLongitude: fromLongitude,
       toLatitude: toLatitude,
       toLongitude: toLongitude,
+      routeId: null,
     );
   }
 
@@ -1328,6 +1326,7 @@ class TransitDataService {
         toLongitude: destination.longitude,
         passingStops: passingStations.map((station) => station.name).toList(),
         passingStations: passingStations,
+        routeId: routeId,
       );
       results.add(
         TransitRouteResult(
@@ -1347,6 +1346,7 @@ class TransitDataService {
           toLatitude: destination.latitude,
           toLongitude: destination.longitude,
           legs: [transitLeg],
+          routeId: routeId,
         ),
       );
     }
@@ -1409,6 +1409,23 @@ class TransitDataService {
     );
     if (stops != 0) return stops;
     return left.durationMinutes.compareTo(right.durationMinutes);
+  }
+
+  static int _compareJourneyResults(
+    TransitRouteResult left,
+    TransitRouteResult right,
+  ) {
+    final departure = _gtfsSeconds(
+      left.departureTime,
+    ).compareTo(_gtfsSeconds(right.departureTime));
+    if (departure != 0) return departure;
+    final arrival = _gtfsSeconds(
+      left.arrivalTime,
+    ).compareTo(_gtfsSeconds(right.arrivalTime));
+    if (arrival != 0) return arrival;
+    final duration = left.durationMinutes.compareTo(right.durationMinutes);
+    if (duration != 0) return duration;
+    return left.serviceName.compareTo(right.serviceName);
   }
 
   List<_GtfsStop> _findStopCandidates(_GtfsFeed feed, String query) {
@@ -1503,6 +1520,10 @@ const _requiredFiles = {
 };
 
 String _inferMode(String routeName, String fallbackMode) {
+  // The bus feed can contain route names such as "MRT feeder" or
+  // "LRT connection". The feed source is authoritative for the vehicle
+  // type, so never reclassify a bus route from words in its display name.
+  if (fallbackMode == 'Bus') return 'Bus';
   final name = routeName.toLowerCase();
   if (name.contains('mrt')) return 'MRT';
   if (name.contains('lrt') || name.contains('monorail')) return 'LRT';

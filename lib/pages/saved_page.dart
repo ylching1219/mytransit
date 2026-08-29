@@ -7,14 +7,25 @@ import '../widgets/smart_move_widgets.dart';
 import 'auth_page.dart';
 import 'route_results_page.dart';
 
-class SavedPage extends StatelessWidget {
+class SavedPage extends StatefulWidget {
   final ValueChanged<String> onMessage;
 
   const SavedPage({required this.onMessage, super.key});
 
   @override
+  State<SavedPage> createState() => _SavedPageState();
+}
+
+class _SavedPageState extends State<SavedPage> {
+  bool _showAllFavorites = false;
+
+  @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
+    final theme = Theme.of(context);
+    final visibleFavorites = _showAllFavorites
+        ? state.savedPlaces
+        : state.savedPlaces.take(3);
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(7, 0, 7, 18),
       child: Column(
@@ -29,11 +40,11 @@ class SavedPage extends StatelessWidget {
             kicker: 'YOUR SHORTCUTS',
             title: 'Saved & history',
             trailing: GestureDetector(
-              onTap: () => onMessage('More saved options'),
-              child: const Icon(
+              onTap: () => widget.onMessage('More saved options'),
+              child: Icon(
                 Icons.more_horiz_rounded,
                 size: 18,
-                color: kMutedDark,
+                color: theme.colorScheme.onSurfaceVariant,
               ),
             ),
           ),
@@ -47,24 +58,31 @@ class SavedPage extends StatelessWidget {
                   context,
                 ).push(MaterialPageRoute(builder: (_) => const LoginPage()));
               } else {
-                onMessage('Add a favourite route from the Plan page');
+                state.selectTab(1);
               }
             },
           ),
           const SizedBox(height: 8),
           if (state.isGuest)
-            const SizedBox(
+            SizedBox(
               width: double.infinity,
               child: SoftCard(
-                color: kPurpleSoft,
+                color: appCardColor(context, kPurpleSoft),
                 child: Row(
                   children: [
-                    Icon(Icons.lock_outline_rounded, size: 16, color: kPurple),
-                    SizedBox(width: 8),
+                    const Icon(
+                      Icons.lock_outline_rounded,
+                      size: 16,
+                      color: kPurple,
+                    ),
+                    const SizedBox(width: 8),
                     Expanded(
                       child: Text(
                         'Guest mode cannot save favourite routes. Sign in to unlock this feature.',
-                        style: TextStyle(fontSize: 9, color: kInk),
+                        style: TextStyle(
+                          fontSize: 9,
+                          color: theme.colorScheme.onSurface,
+                        ),
                       ),
                     ),
                   ],
@@ -72,43 +90,88 @@ class SavedPage extends StatelessWidget {
               ),
             )
           else if (state.savedPlaces.isEmpty)
-            const SizedBox(
+            SizedBox(
               width: double.infinity,
               child: SoftCard(
+                color: appCardColor(context, Colors.white),
                 child: Text(
                   'No favourite routes yet. Save one from the Plan page.',
-                  style: TextStyle(fontSize: 9, color: kMuted),
+                  style: TextStyle(
+                    fontSize: 9,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
             )
           else
-            ...state.savedPlaces.map(
+            ...visibleFavorites.map(
               (place) => Padding(
                 padding: const EdgeInsets.only(bottom: 7),
-                child: SavedItem(
-                  icon: Icons.bookmark_outline_rounded,
-                  iconBackground: kPurpleSoft,
-                  eyebrow: 'FAVOURITE ROUTE',
-                  title: place.title,
-                  subtitle: place.subtitle,
-                  onDelete: () => _confirmRemoveFavorite(context, place),
-                  onTap: () {
-                    final locations = _splitRoute(place.title);
-                    if (locations == null) {
-                      onMessage(
-                        'This favourite route needs to be saved again.',
+                child: Dismissible(
+                  key: ValueKey(place.id),
+                  direction: DismissDirection.endToStart,
+                  background: const _SwipeRemoveBackground(),
+                  confirmDismiss: (_) =>
+                      _confirmRemoveFavoriteDialog(context, place),
+                  onDismissed: (_) => _removeFavorite(context, place),
+                  child: SavedItem(
+                    icon: Icons.bookmark_outline_rounded,
+                    iconBackground: kPurpleSoft,
+                    eyebrow: 'FAVOURITE ROUTE',
+                    title: place.title,
+                    subtitle: place.subtitle,
+                    onTap: () {
+                      final locations = _splitRoute(place.title);
+                      if (locations == null) {
+                        widget.onMessage(
+                          'This favourite route needs to be saved again.',
+                        );
+                        return;
+                      }
+                      _searchSavedRoute(
+                        context,
+                        from: locations[0],
+                        to: locations[1],
                       );
-                      return;
-                    }
-                    _searchSavedRoute(
-                      context,
-                      from: locations[0],
-                      to: locations[1],
-                    );
-                  },
+                    },
+                  ),
                 ),
               ),
             ),
+          if (!state.isGuest && state.savedPlaces.length > 3) ...[
+            const SizedBox(height: 2),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () {
+                  setState(() => _showAllFavorites = !_showAllFavorites);
+                },
+                icon: Icon(
+                  _showAllFavorites
+                      ? Icons.keyboard_arrow_up_rounded
+                      : Icons.keyboard_arrow_down_rounded,
+                  size: 18,
+                ),
+                label: Text(
+                  _showAllFavorites
+                      ? 'Show fewer favourite routes'
+                      : 'View all favourite routes (${state.savedPlaces.length})',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: kPurple,
+                  side: BorderSide(color: kPurple.withValues(alpha: .45)),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(11),
+                  ),
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 13),
           SectionHeading(
             title: 'Recent journeys',
@@ -119,12 +182,16 @@ class SavedPage extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           if (state.recentJourneys.isEmpty)
-            const SizedBox(
+            SizedBox(
               width: double.infinity,
               child: SoftCard(
+                color: appCardColor(context, Colors.white),
                 child: Text(
                   'Your completed journeys will appear here.',
-                  style: TextStyle(fontSize: 9, color: kMuted),
+                  style: TextStyle(
+                    fontSize: 9,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
             )
@@ -195,15 +262,13 @@ class SavedPage extends StatelessWidget {
     required String to,
   }) async {
     final state = context.read<AppState>();
-    onMessage('Finding routes from $from to $to...');
-    final found = await state.planJourney(
-      from: from,
-      to: to,
-      recordRecent: false,
-    );
+    widget.onMessage('Finding routes from $from to $to...');
+    final found = await state.planJourney(from: from, to: to);
     if (!context.mounted) return;
     if (!found) {
-      onMessage(state.transitError ?? 'No route was found for this journey.');
+      widget.onMessage(
+        state.transitError ?? 'No route was found for this journey.',
+      );
       return;
     }
     await Navigator.of(context).push(
@@ -214,7 +279,7 @@ class SavedPage extends StatelessWidget {
     );
   }
 
-  Future<void> _confirmRemoveFavorite(
+  Future<bool> _confirmRemoveFavoriteDialog(
     BuildContext context,
     SavedPlace place,
   ) async {
@@ -235,11 +300,48 @@ class SavedPage extends StatelessWidget {
         ],
       ),
     );
-    if (remove != true || !context.mounted) return;
+    return remove == true;
+  }
+
+  Future<void> _removeFavorite(BuildContext context, SavedPlace place) async {
     final removed = await context.read<AppState>().removeFavoriteRoute(
       place.id,
     );
-    if (context.mounted && removed) onMessage('Favourite route removed');
+    if (context.mounted && removed) {
+      widget.onMessage('Favourite route removed');
+    }
+  }
+}
+
+class _SwipeRemoveBackground extends StatelessWidget {
+  const _SwipeRemoveBackground();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      alignment: Alignment.centerRight,
+      padding: const EdgeInsets.only(right: 16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF5D9D3),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFEABCB3)),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.delete_outline_rounded, color: Color(0xFFB95F52)),
+          SizedBox(width: 5),
+          Text(
+            'Remove',
+            style: TextStyle(
+              color: Color(0xFFB95F52),
+              fontSize: 10,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -249,7 +351,6 @@ class SavedItem extends StatelessWidget {
   final String? eyebrow;
   final String title;
   final String subtitle;
-  final VoidCallback? onDelete;
   final VoidCallback onTap;
 
   const SavedItem({
@@ -258,18 +359,19 @@ class SavedItem extends StatelessWidget {
     this.eyebrow,
     required this.title,
     required this.subtitle,
-    this.onDelete,
     required this.onTap,
     super.key,
   });
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return SizedBox(
       width: double.infinity,
       child: GestureDetector(
         onTap: onTap,
         child: SoftCard(
+          color: appCardColor(context, Colors.white),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
           child: Row(
             children: [
@@ -278,7 +380,7 @@ class SavedItem extends StatelessWidget {
                 height: 32,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
-                  color: iconBackground,
+                  color: appCardColor(context, iconBackground),
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Icon(icon, size: 16, color: kPurple),
@@ -291,10 +393,10 @@ class SavedItem extends StatelessWidget {
                     if (eyebrow != null)
                       Text(
                         eyebrow!,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 7,
                           letterSpacing: .65,
-                          color: kMuted,
+                          color: theme.colorScheme.onSurfaceVariant,
                           fontWeight: FontWeight.w900,
                         ),
                       ),
@@ -303,9 +405,9 @@ class SavedItem extends StatelessWidget {
                       title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 10.5,
-                        color: kInk,
+                        color: theme.colorScheme.onSurface,
                         fontWeight: FontWeight.w900,
                       ),
                     ),
@@ -314,38 +416,27 @@ class SavedItem extends StatelessWidget {
                       subtitle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 8.5, color: kMuted),
+                      style: TextStyle(
+                        fontSize: 8.5,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ],
                 ),
               ),
               const SizedBox(width: 7),
-              if (onDelete != null)
-                IconButton(
-                  onPressed: onDelete,
-                  icon: const Icon(Icons.delete_outline_rounded),
-                  color: kMutedDark,
-                  tooltip: 'Remove favourite',
-                  visualDensity: VisualDensity.compact,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(
-                    minWidth: 30,
-                    minHeight: 30,
-                  ),
-                ),
-              if (onDelete != null) const SizedBox(width: 2),
               Container(
                 width: 25,
                 height: 25,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
-                  color: kBackground,
+                  color: appCardColor(context, kBackground),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: const Icon(
+                child: Icon(
                   Icons.chevron_right_rounded,
                   size: 16,
-                  color: kMuted,
+                  color: theme.colorScheme.onSurfaceVariant,
                 ),
               ),
             ],

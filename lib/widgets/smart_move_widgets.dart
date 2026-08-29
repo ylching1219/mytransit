@@ -14,6 +14,29 @@ const kPurpleSoft = Color(0xFFF0EAFB);
 const kPeach = Color(0xFFFFE9E1);
 const kYellow = Color(0xFFFFF4CF);
 
+Color appFieldSurface(BuildContext context) {
+  return Theme.of(context).brightness == Brightness.dark
+      ? const Color(0xFF24363A)
+      : Colors.white;
+}
+
+Color appFieldBorder(BuildContext context) {
+  return Theme.of(context).brightness == Brightness.dark
+      ? const Color(0xFF4A6166)
+      : kBorder;
+}
+
+Color appCardColor(BuildContext context, Color lightColor) {
+  if (Theme.of(context).brightness != Brightness.dark) return lightColor;
+  if (lightColor == Colors.white) return const Color(0xFF1E2C30);
+  if (lightColor == kBackground) return const Color(0xFF101A1D);
+  if (lightColor == kTealSoft) return const Color(0xFF16413E);
+  if (lightColor == kPurpleSoft) return const Color(0xFF30264D);
+  if (lightColor == kPeach) return const Color(0xFF4A302D);
+  if (lightColor == kYellow) return const Color(0xFF493B1C);
+  return lightColor;
+}
+
 DateTime malaysiaNow() {
   return DateTime.now().toUtc().add(const Duration(hours: 8));
 }
@@ -98,6 +121,7 @@ class _AppHeaderState extends State<AppHeader> {
     final headerTitle = widget.greetingName == null
         ? widget.title
         : '${greetingForHour(_now.hour)}, ${widget.greetingName}';
+    final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(7, 17, 7, 0),
       child: Row(
@@ -109,24 +133,26 @@ class _AppHeaderState extends State<AppHeader> {
             children: [
               Text(
                 '${_dateLabel(_now)} · ${_timeLabel(_now)}',
-                style: KickerStyle.small,
+                style: KickerStyle.small.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
               const SizedBox(height: 3),
               Text(
                 headerTitle,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w800,
-                  color: kInk,
+                  color: theme.colorScheme.onSurface,
                 ),
               ),
             ],
           ),
           const Spacer(),
-          const Icon(
+          Icon(
             Icons.notifications_none_rounded,
             size: 19,
-            color: kMutedDark,
+            color: theme.colorScheme.onSurfaceVariant,
           ),
         ],
       ),
@@ -214,6 +240,7 @@ class PageTitle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Row(
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
@@ -221,14 +248,19 @@ class PageTitle extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(kicker, style: KickerStyle.regular),
+              Text(
+                kicker,
+                style: KickerStyle.regular.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
               const SizedBox(height: 5),
               Text(
                 title,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 21,
                   height: 1.05,
-                  color: kInk,
+                  color: theme.colorScheme.onSurface,
                   fontWeight: FontWeight.w900,
                 ),
               ),
@@ -255,13 +287,14 @@ class SectionHeading extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Row(
       children: [
         Text(
           title,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 12,
-            color: kInk,
+            color: theme.colorScheme.onSurface,
             fontWeight: FontWeight.w900,
           ),
         ),
@@ -297,15 +330,21 @@ class SoftCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final borderColor = theme.brightness == Brightness.dark
+        ? const Color(0xFF35484C)
+        : kBorder;
     return Container(
       padding: padding,
       decoration: BoxDecoration(
         color: color,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: kBorder),
-        boxShadow: const [
+        border: Border.all(color: borderColor),
+        boxShadow: [
           BoxShadow(
-            color: Color(0x100A373B),
+            color: theme.brightness == Brightness.dark
+                ? const Color(0x40000000)
+                : const Color(0x100A373B),
             blurRadius: 8,
             offset: Offset(0, 2),
           ),
@@ -328,6 +367,7 @@ class AppBottomNav extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     const items = [
       (Icons.home_outlined, 'Home'),
       (Icons.alt_route_rounded, 'Plan'),
@@ -336,9 +376,9 @@ class AppBottomNav extends StatelessWidget {
     ];
     return Container(
       height: 61,
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        border: Border(top: BorderSide(color: kBorder)),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        border: Border(top: BorderSide(color: theme.dividerColor)),
       ),
       child: Row(
         children: [
@@ -374,6 +414,7 @@ class NavItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -385,14 +426,18 @@ class NavItem extends StatelessWidget {
             color: selected ? kPurpleSoft : Colors.transparent,
             borderRadius: BorderRadius.circular(10),
           ),
-          child: Icon(icon, size: 16, color: selected ? kPurple : kMuted),
+          child: Icon(
+            icon,
+            size: 16,
+            color: selected ? kPurple : theme.colorScheme.onSurfaceVariant,
+          ),
         ),
         const SizedBox(height: 1),
         Text(
           label,
           style: TextStyle(
             fontSize: 8.5,
-            color: selected ? kPurple : kMutedDark,
+            color: selected ? kPurple : theme.colorScheme.onSurfaceVariant,
             fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
           ),
         ),

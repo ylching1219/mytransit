@@ -260,11 +260,13 @@ class AuthScaffold extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: kBackground,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
-        backgroundColor: kBackground,
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
         elevation: 0,
-        iconTheme: const IconThemeData(color: kInk),
+        iconTheme: IconThemeData(
+          color: Theme.of(context).colorScheme.onSurface,
+        ),
       ),
       body: SafeArea(
         child: SingleChildScrollView(
@@ -321,6 +323,7 @@ class AuthField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final fieldBorder = appFieldBorder(context);
     return TextFormField(
       controller: controller,
       obscureText: obscureText,
@@ -330,14 +333,14 @@ class AuthField extends StatelessWidget {
         labelText: label,
         prefixIcon: Icon(icon, color: kPurple),
         filled: true,
-        fillColor: Colors.white,
+        fillColor: appFieldSurface(context),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: kBorder),
+          borderSide: BorderSide(color: fieldBorder),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: kBorder),
+          borderSide: BorderSide(color: fieldBorder),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),

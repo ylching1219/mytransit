@@ -30,17 +30,37 @@ class _PlanPageState extends State<PlanPage> {
     super.initState();
     _fromController = TextEditingController(text: 'Current location');
     _toController = TextEditingController(text: 'Pasar Seni');
+    _fromController.addListener(_onLocationTextChanged);
+    _toController.addListener(_onLocationTextChanged);
     _fromFocusNode = FocusNode();
     _toFocusNode = FocusNode();
+    _fromFocusNode.addListener(_closeToSuggestionsWhenFromFocuses);
+    _toFocusNode.addListener(_closeFromSuggestionsWhenToFocuses);
   }
 
   @override
   void dispose() {
+    _fromController.removeListener(_onLocationTextChanged);
+    _toController.removeListener(_onLocationTextChanged);
     _fromController.dispose();
     _toController.dispose();
+    _fromFocusNode.removeListener(_closeToSuggestionsWhenFromFocuses);
+    _toFocusNode.removeListener(_closeFromSuggestionsWhenToFocuses);
     _fromFocusNode.dispose();
     _toFocusNode.dispose();
     super.dispose();
+  }
+
+  void _onLocationTextChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _closeToSuggestionsWhenFromFocuses() {
+    if (_fromFocusNode.hasFocus) _toFocusNode.unfocus();
+  }
+
+  void _closeFromSuggestionsWhenToFocuses() {
+    if (_toFocusNode.hasFocus) _fromFocusNode.unfocus();
   }
 
   String? _required(String? value) {
@@ -65,6 +85,7 @@ class _PlanPageState extends State<PlanPage> {
   }
 
   Future<void> _chooseDepartureTime() async {
+    FocusScope.of(context).unfocus();
     final picked = await showTimePicker(
       context: context,
       initialTime: _departureTime ?? _currentMalaysiaTime(),
@@ -102,7 +123,7 @@ class _PlanPageState extends State<PlanPage> {
 
       final selected = await showModalBottomSheet<NearbyTransitStop>(
         context: context,
-        backgroundColor: kBackground,
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
         isScrollControlled: true,
         builder: (sheetContext) {
           return SafeArea(
@@ -298,16 +319,38 @@ class _PlanPageState extends State<PlanPage> {
       return;
     }
 
+    if (state.isFavoriteRouteSaved(
+      from: _fromController.text,
+      to: _toController.text,
+    )) {
+      widget.onMessage('This route is already saved');
+      return;
+    }
+
     final saved = await state.saveFavoriteRoute(
       from: _fromController.text,
       to: _toController.text,
     );
-    if (mounted && saved) widget.onMessage('Favourite route saved');
+    if (!mounted) return;
+    if (saved) {
+      widget.onMessage('Favourite route saved');
+    } else if (state.isFavoriteRouteSaved(
+      from: _fromController.text,
+      to: _toController.text,
+    )) {
+      widget.onMessage('This route is already saved');
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
+    final routeAlreadySaved =
+        !state.isGuest &&
+        state.isFavoriteRouteSaved(
+          from: _fromController.text,
+          to: _toController.text,
+        );
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(7, 0, 7, 18),
       child: Form(
@@ -323,18 +366,6 @@ class _PlanPageState extends State<PlanPage> {
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                GestureDetector(
-                  onTap: () => widget.onMessage('Back to home'),
-                  child: const Padding(
-                    padding: EdgeInsets.only(top: 2),
-                    child: Icon(
-                      Icons.arrow_back_rounded,
-                      size: 17,
-                      color: kMutedDark,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 11),
                 const Expanded(
                   child: PageTitle(
                     kicker: 'PLAN A JOURNEY',
@@ -430,10 +461,19 @@ class _PlanPageState extends State<PlanPage> {
               width: double.infinity,
               height: 36,
               child: OutlinedButton.icon(
-                onPressed: _saveFavoriteRoute,
-                icon: const Icon(Icons.bookmark_border_rounded, size: 15),
+                onPressed: routeAlreadySaved
+                    ? () => widget.onMessage('This route is already saved')
+                    : _saveFavoriteRoute,
+                icon: Icon(
+                  routeAlreadySaved
+                      ? Icons.bookmark_rounded
+                      : Icons.bookmark_border_rounded,
+                  size: 15,
+                ),
                 label: Text(
-                  state.isGuest
+                  routeAlreadySaved
+                      ? 'Route already saved'
+                      : state.isGuest
                       ? 'Sign in to save route'
                       : 'Save as favourite route',
                   style: const TextStyle(
@@ -486,9 +526,11 @@ class DepartureTimeField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return GestureDetector(
       onTap: onTap,
       child: SoftCard(
+        color: appFieldSurface(context),
         padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
         child: Row(
           children: [
@@ -511,12 +553,17 @@ class DepartureTimeField extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('DEPART AT', style: KickerStyle.small),
+                  Text(
+                    'DEPART AT',
+                    style: KickerStyle.small.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
                   Text(
                     timeLabel,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 11,
-                      color: kInk,
+                      color: theme.colorScheme.onSurface,
                       fontWeight: FontWeight.w900,
                     ),
                   ),
@@ -524,7 +571,10 @@ class DepartureTimeField extends StatelessWidget {
                     timeLabel == 'Any time'
                         ? 'Show all scheduled routes'
                         : 'Show scheduled routes within the next 30 minutes',
-                    style: TextStyle(fontSize: 8.5, color: kMuted),
+                    style: TextStyle(
+                      fontSize: 8.5,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
                   ),
                 ],
               ),
@@ -538,7 +588,10 @@ class DepartureTimeField extends StatelessWidget {
                 constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
               )
             else
-              const Icon(Icons.keyboard_arrow_down_rounded, color: kMutedDark),
+              Icon(
+                Icons.keyboard_arrow_down_rounded,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
           ],
         ),
       ),
@@ -577,7 +630,9 @@ class RouteField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return SoftCard(
+      color: appFieldSurface(context),
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
       child: Row(
         children: [
@@ -596,7 +651,12 @@ class RouteField extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(label, style: KickerStyle.small),
+                Text(
+                  label,
+                  style: KickerStyle.small.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
                 _LocationInput(
                   controller: controller,
                   focusNode: focusNode,
@@ -606,7 +666,10 @@ class RouteField extends StatelessWidget {
                 if (subtitle != null)
                   Text(
                     subtitle!,
-                    style: const TextStyle(fontSize: 8.5, color: kMuted),
+                    style: TextStyle(
+                      fontSize: 8.5,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
                   ),
               ],
             ),
@@ -616,7 +679,11 @@ class RouteField extends StatelessWidget {
               onTap: onTrailingTap,
               child: Padding(
                 padding: const EdgeInsets.all(6),
-                child: Icon(trailingIcon, size: 16, color: kMutedDark),
+                child: Icon(
+                  trailingIcon,
+                  size: 16,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
             ),
         ],
@@ -639,11 +706,15 @@ class _LocationInput extends StatelessWidget {
   final Future<Iterable<TransitPlaceSuggestion>> Function(String)?
   suggestionsBuilder;
 
-  TextStyle get _inputStyle =>
-      const TextStyle(fontSize: 10, color: kInk, fontWeight: FontWeight.w900);
+  TextStyle _inputStyle(BuildContext context) => TextStyle(
+    fontSize: 10,
+    color: Theme.of(context).colorScheme.onSurface,
+    fontWeight: FontWeight.w900,
+  );
 
   InputDecoration get _inputDecoration => const InputDecoration(
     isDense: true,
+    filled: false,
     border: InputBorder.none,
     contentPadding: EdgeInsets.zero,
     errorStyle: TextStyle(fontSize: 8.5),
@@ -655,7 +726,7 @@ class _LocationInput extends StatelessWidget {
       return TextFormField(
         controller: controller,
         validator: validator,
-        style: _inputStyle,
+        style: _inputStyle(context),
         decoration: _inputDecoration,
       );
     }
@@ -671,14 +742,16 @@ class _LocationInput extends StatelessWidget {
           text: option.title,
           selection: TextSelection.collapsed(offset: option.title.length),
         );
+        focusNode?.unfocus();
       },
       optionsMaxHeight: 210,
       optionsViewBuilder: (context, onSelected, options) {
+        final theme = Theme.of(context);
         final optionList = options.toList();
         return Align(
           alignment: Alignment.topLeft,
           child: Material(
-            color: kBackground,
+            color: Theme.of(context).colorScheme.surface,
             elevation: 5,
             borderRadius: BorderRadius.circular(10),
             clipBehavior: Clip.antiAlias,
@@ -688,8 +761,12 @@ class _LocationInput extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(vertical: 5),
                 shrinkWrap: true,
                 itemCount: optionList.length,
-                separatorBuilder: (_, index) =>
-                    const Divider(height: 1, indent: 44, endIndent: 10),
+                separatorBuilder: (_, index) => Divider(
+                  height: 1,
+                  indent: 44,
+                  endIndent: 10,
+                  color: theme.dividerColor,
+                ),
                 itemBuilder: (_, index) {
                   final option = optionList[index];
                   final isPlace = option.mode == 'Place';
@@ -729,9 +806,9 @@ class _LocationInput extends StatelessWidget {
                                   option.title,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 10,
-                                    color: kInk,
+                                    color: theme.colorScheme.onSurface,
                                     fontWeight: FontWeight.w900,
                                   ),
                                 ),
@@ -740,18 +817,18 @@ class _LocationInput extends StatelessWidget {
                                   '${option.mode} · ${option.subtitle}',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 8.5,
-                                    color: kMutedDark,
+                                    color: theme.colorScheme.onSurfaceVariant,
                                   ),
                                 ),
                               ],
                             ),
                           ),
-                          const Icon(
+                          Icon(
                             Icons.north_east_rounded,
                             size: 14,
-                            color: kMuted,
+                            color: theme.colorScheme.onSurfaceVariant,
                           ),
                         ],
                       ),
@@ -767,9 +844,10 @@ class _LocationInput extends StatelessWidget {
         return TextFormField(
           controller: fieldController,
           focusNode: focusNode,
+          onTapOutside: (_) => focusNode.unfocus(),
           validator: validator,
           onFieldSubmitted: (_) => onSubmitted(),
-          style: _inputStyle,
+          style: _inputStyle(context),
           decoration: _inputDecoration,
         );
       },

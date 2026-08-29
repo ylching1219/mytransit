@@ -3,12 +3,20 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../services/transit_data_service.dart';
+import '../services/realtime_transit_service.dart';
 import 'smart_move_widgets.dart';
 
 class TransitRouteMap extends StatefulWidget {
-  const TransitRouteMap({this.route, super.key});
+  const TransitRouteMap({
+    this.route,
+    this.currentLocation,
+    this.liveVehicles = const [],
+    super.key,
+  });
 
   final TransitRouteResult? route;
+  final LatLng? currentLocation;
+  final List<RealtimeTransitVehicle> liveVehicles;
 
   static const klSentral = LatLng(3.1339, 101.6869);
   static const pasarSeni = LatLng(3.1426, 101.6958);
@@ -132,6 +140,34 @@ class _TransitRouteMapState extends State<TransitRouteMap> {
                     alignRight: true,
                   ),
                 ),
+                if (widget.currentLocation != null)
+                  Marker(
+                    point: widget.currentLocation!,
+                    width: 28,
+                    height: 28,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: kTeal, width: 2),
+                        boxShadow: const [
+                          BoxShadow(color: Color(0x33000000), blurRadius: 5),
+                        ],
+                      ),
+                      child: const Icon(
+                        Icons.my_location_rounded,
+                        size: 15,
+                        color: kTeal,
+                      ),
+                    ),
+                  ),
+                for (final vehicle in widget.liveVehicles)
+                  Marker(
+                    point: LatLng(vehicle.latitude, vehicle.longitude),
+                    width: 118,
+                    height: 40,
+                    child: _LiveVehicleMarker(vehicle: vehicle),
+                  ),
               ],
             ),
             Positioned(
@@ -215,6 +251,74 @@ class _MapControlButton extends StatelessWidget {
         width: 30,
         height: 27,
         child: Icon(icon, size: 16, color: kInk),
+      ),
+    );
+  }
+}
+
+class _LiveVehicleMarker extends StatelessWidget {
+  final RealtimeTransitVehicle vehicle;
+
+  const _LiveVehicleMarker({required this.vehicle});
+
+  @override
+  Widget build(BuildContext context) {
+    final isBus = vehicle.mode == 'Bus';
+    final color = isBus ? kTeal : kPurple;
+    final vehicleId = vehicle.id.trim().isEmpty ? vehicle.label : vehicle.id;
+    final currentStop =
+        vehicle.currentStopName ??
+        (vehicle.currentStopId?.trim().isEmpty ?? true
+            ? 'Stop not reported'
+            : vehicle.currentStopId!.trim());
+    final tooltip = vehicle.label == vehicle.id || vehicle.label.isEmpty
+        ? '${isBus ? 'Bus' : 'Train'} ID: $vehicleId\nCurrent stop: $currentStop'
+        : '${isBus ? 'Bus' : 'Train'} ID: $vehicleId\nCurrent stop: $currentStop\n${vehicle.label}';
+    return Tooltip(
+      message: tooltip,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 31,
+            height: 31,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 2),
+              boxShadow: const [
+                BoxShadow(color: Color(0x44000000), blurRadius: 5),
+              ],
+            ),
+            child: Icon(
+              isBus ? Icons.directions_bus_filled_rounded : Icons.train_rounded,
+              size: 16,
+              color: Colors.white,
+            ),
+          ),
+          const SizedBox(width: 4),
+          Container(
+            constraints: const BoxConstraints(maxWidth: 78),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: .95),
+              borderRadius: BorderRadius.circular(6),
+              boxShadow: const [
+                BoxShadow(color: Color(0x44000000), blurRadius: 4),
+              ],
+            ),
+            child: Text(
+              vehicleId,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 8,
+                color: color,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

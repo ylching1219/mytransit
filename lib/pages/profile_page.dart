@@ -37,9 +37,15 @@ class _ProfilePageState extends State<ProfilePage> {
 
   Future<void> _choosePreferredTransport() async {
     final state = context.read<AppState>();
+    if (state.isGuest) {
+      await Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => const LoginPage()));
+      return;
+    }
     final selected = await showModalBottomSheet<String>(
       context: context,
-      backgroundColor: kBackground,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       builder: (sheetContext) => SafeArea(
         child: _PreferenceOptions<String>(
           title: 'Preferred transport',
@@ -61,6 +67,7 @@ class _ProfilePageState extends State<ProfilePage> {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
+    final theme = Theme.of(context);
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(7, 0, 7, 18),
       child: Column(
@@ -82,7 +89,7 @@ class _ProfilePageState extends State<ProfilePage> {
           const SizedBox(height: 17),
           if (state.isGuest)
             SoftCard(
-              color: kPurpleSoft,
+              color: appCardColor(context, kPurpleSoft),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 11),
               child: Row(
                 children: [
@@ -92,7 +99,7 @@ class _ProfilePageState extends State<ProfilePage> {
                     color: kPurple,
                   ),
                   const SizedBox(width: 9),
-                  const Expanded(
+                  Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -100,14 +107,17 @@ class _ProfilePageState extends State<ProfilePage> {
                           'Guest mode',
                           style: TextStyle(
                             fontSize: 10,
-                            color: kInk,
+                            color: theme.colorScheme.onSurface,
                             fontWeight: FontWeight.w900,
                           ),
                         ),
                         SizedBox(height: 3),
                         Text(
                           'Sign in to save favourite routes and sync preferences',
-                          style: TextStyle(fontSize: 8.5, color: kMutedDark),
+                          style: TextStyle(
+                            fontSize: 8.5,
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
                         ),
                       ],
                     ),
@@ -123,6 +133,7 @@ class _ProfilePageState extends State<ProfilePage> {
             )
           else
             SoftCard(
+              color: appCardColor(context, Colors.white),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 11),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -140,18 +151,18 @@ class _ProfilePageState extends State<ProfilePage> {
                           children: [
                             Text(
                               state.profileName,
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 11,
-                                color: kInk,
+                                color: theme.colorScheme.onSurface,
                                 fontWeight: FontWeight.w900,
                               ),
                             ),
                             const SizedBox(height: 3),
                             Text(
                               state.profileEmail,
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 8.5,
-                                color: kMuted,
+                                color: theme.colorScheme.onSurfaceVariant,
                               ),
                             ),
                           ],
@@ -182,17 +193,78 @@ class _ProfilePageState extends State<ProfilePage> {
             ),
           const SizedBox(height: 14),
           ProfileSetting(
-            icon: Icons.directions_transit_rounded,
+            icon: state.isGuest
+                ? Icons.lock_outline_rounded
+                : Icons.directions_transit_rounded,
             label: 'PREFERRED TRANSPORT',
-            value: state.preferredTransport,
+            value: state.isGuest
+                ? 'Sign in to customise'
+                : state.preferredTransport,
             onTap: _choosePreferredTransport,
           ),
           const SizedBox(height: 12),
           SoftCard(
+            color: appFieldSurface(context),
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
             child: Row(
               children: [
-                const Expanded(
+                Container(
+                  width: 27,
+                  height: 27,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: kPurpleSoft,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    state.darkMode
+                        ? Icons.dark_mode_outlined
+                        : Icons.light_mode_outlined,
+                    size: 14,
+                    color: kPurple,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Appearance',
+                        style: TextStyle(
+                          fontSize: 9,
+                          color: theme.colorScheme.onSurface,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      SizedBox(height: 3),
+                      Text(
+                        'Use dark mode for low-light viewing',
+                        style: TextStyle(
+                          fontSize: 8.5,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Switch.adaptive(
+                  value: state.darkMode,
+                  onChanged: context.read<AppState>().setDarkMode,
+                  activeThumbColor: Colors.white,
+                  activeTrackColor: kPurple,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          SoftCard(
+            color: appFieldSurface(context),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+            child: Row(
+              children: [
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -200,14 +272,17 @@ class _ProfilePageState extends State<ProfilePage> {
                         'Journey notifications',
                         style: TextStyle(
                           fontSize: 9,
-                          color: kInk,
+                          color: theme.colorScheme.onSurface,
                           fontWeight: FontWeight.w900,
                         ),
                       ),
                       SizedBox(height: 3),
                       Text(
                         'Departure, delays and approaching stops',
-                        style: TextStyle(fontSize: 8.5, color: kMuted),
+                        style: TextStyle(
+                          fontSize: 8.5,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
                       ),
                     ],
                   ),
@@ -280,9 +355,10 @@ class ProfileActionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Container(
       decoration: BoxDecoration(
-        color: backgroundColor,
+        color: appCardColor(context, backgroundColor),
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: iconColor.withAlpha(30)),
       ),
@@ -300,7 +376,7 @@ class ProfileActionButton extends StatelessWidget {
                   height: 38,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: Colors.white,
+                    color: appCardColor(context, Colors.white),
                     borderRadius: BorderRadius.circular(11),
                   ),
                   child: Icon(icon, size: 20, color: iconColor),
@@ -312,18 +388,18 @@ class ProfileActionButton extends StatelessWidget {
                     children: [
                       Text(
                         title,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 11,
-                          color: kInk,
+                          color: theme.colorScheme.onSurface,
                           fontWeight: FontWeight.w900,
                         ),
                       ),
                       const SizedBox(height: 2),
                       Text(
                         subtitle,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 8.5,
-                          color: kMutedDark,
+                          color: theme.colorScheme.onSurfaceVariant,
                         ),
                       ),
                     ],
@@ -598,7 +674,9 @@ class ProfileSetting extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final card = SoftCard(
+      color: appFieldSurface(context),
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
       child: Row(
         children: [
@@ -621,16 +699,20 @@ class ProfileSetting extends StatelessWidget {
                 const SizedBox(height: 3),
                 Text(
                   value,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 9,
-                    color: kInk,
+                    color: theme.colorScheme.onSurface,
                     fontWeight: FontWeight.w800,
                   ),
                 ),
               ],
             ),
           ),
-          const Icon(Icons.chevron_right_rounded, size: 16, color: kMuted),
+          Icon(
+            Icons.chevron_right_rounded,
+            size: 16,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
         ],
       ),
     );
@@ -655,6 +737,7 @@ class _PreferenceOptions<T> extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 14, 14, 10),
       child: Column(
@@ -663,9 +746,9 @@ class _PreferenceOptions<T> extends StatelessWidget {
         children: [
           Text(
             title,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 16,
-              color: kInk,
+              color: theme.colorScheme.onSurface,
               fontWeight: FontWeight.w900,
             ),
           ),
