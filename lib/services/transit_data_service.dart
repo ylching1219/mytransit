@@ -1043,7 +1043,12 @@ class TransitDataService {
         final rawDurationSeconds = _plannerInt(
           rawLeg['duration'] ?? rawLeg['duration_seconds'],
         );
-        final durationMinutes = rawDurationSeconds == null
+        final plannerArrival = _plannerTimeOfDay(
+          rawLeg['estimated_end_arrival_time'] ??
+              rawLeg['arrival_time'] ??
+              rawLeg['estimated_arrival_time'],
+        );
+        final fallbackDurationMinutes = rawDurationSeconds == null
             ? _walkingMinutes(
                 _distanceMeters(
                   walkFrom.latitude,
@@ -1053,13 +1058,11 @@ class TransitDataService {
                 ),
               )
             : math.max(1, (rawDurationSeconds / 60).ceil());
+        final durationMinutes = plannerArrival == null
+            ? fallbackDurationMinutes
+            : _minutesBetween(departure, plannerArrival);
         final arrival =
-            _plannerTimeOfDay(
-              rawLeg['estimated_end_arrival_time'] ??
-                  rawLeg['arrival_time'] ??
-                  rawLeg['estimated_arrival_time'],
-            ) ??
-            _addPlannerMinutes(departure, durationMinutes);
+            plannerArrival ?? _addPlannerMinutes(departure, durationMinutes);
         legs.add(
           TransitJourneyLeg(
             mode: 'Walk',
@@ -1111,21 +1114,19 @@ class TransitDataService {
           ) ??
           currentTime;
       final rawDurationSeconds = _plannerInt(rawLeg['duration']);
-      final arrival =
-          _plannerTimeOfDay(
-            rawLeg['estimated_end_arrival_time'] ??
-                rawLeg['arrival_time'] ??
-                rawLeg['estimated_arrival_time'],
-          ) ??
-          _addPlannerMinutes(
-            departure,
-            rawDurationSeconds == null
-                ? 1
-                : math.max(1, (rawDurationSeconds / 60).ceil()),
-          );
-      final durationMinutes = rawDurationSeconds == null
-          ? _minutesBetween(departure, arrival)
+      final plannerArrival = _plannerTimeOfDay(
+        rawLeg['estimated_end_arrival_time'] ??
+            rawLeg['arrival_time'] ??
+            rawLeg['estimated_arrival_time'],
+      );
+      final fallbackDurationMinutes = rawDurationSeconds == null
+          ? 1
           : math.max(1, (rawDurationSeconds / 60).ceil());
+      final durationMinutes = plannerArrival == null
+          ? fallbackDurationMinutes
+          : _minutesBetween(departure, plannerArrival);
+      final arrival =
+          plannerArrival ?? _addPlannerMinutes(departure, durationMinutes);
       final passingStations = points
           .map(
             (point) => TransitStationPoint(
@@ -1187,18 +1188,17 @@ class TransitDataService {
         break;
       }
     }
-    final routeDeparture =
-        _plannerTimeOfDay(
-          route['estimated_departure_time'] ?? route['departure_time'],
-        ) ??
-        firstLeg.departureTime;
+    // The planner's top-level departure can be the requested search time
+    // (00:00 for Any time), rather than the actual first service departure.
+    // Use the first transit leg so schedule results show the real departure.
+    final routeDeparture = firstTransit.departureTime;
     final routeArrival =
         _plannerTimeOfDay(route['estimated_arrival_time']) ??
         lastLeg.arrivalTime;
-    final rawTotalDuration = _plannerInt(route['total_duration']);
-    final durationMinutes = rawTotalDuration == null
-        ? _minutesBetween(routeDeparture, routeArrival)
-        : math.max(1, (rawTotalDuration / 60).ceil());
+    // MyRapid's total_duration is based on seconds from midnight and can
+    // include the wait from the requested search time. Calculate the useful
+    // journey duration from the actual first service to the final arrival.
+    final durationMinutes = _minutesBetween(routeDeparture, routeArrival);
 
     return TransitRouteResult(
       fromStopName: firstTransit.fromStopName,

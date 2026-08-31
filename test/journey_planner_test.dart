@@ -101,6 +101,7 @@ void main() {
         expect(routes.single.serviceName, 'T108');
         expect(routes.single.routeId, '30000134');
         expect(routes.single.fare?.adult, '1.00');
+        expect(routes.single.durationMinutes, 25);
         expect(routes.single.legs, hasLength(2));
         expect(routes.single.legs.last.passingStops, [
           'Origin stop',

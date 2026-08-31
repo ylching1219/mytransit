@@ -388,7 +388,7 @@ class RouteOptionCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  TransitDataService.formatTime(route.departureTime),
+                  _routeDepartureLabel(route),
                   style: const TextStyle(
                     fontSize: 13,
                     color: kInk,
@@ -585,9 +585,7 @@ class RouteDetailPage extends StatelessWidget {
                         Expanded(
                           child: _DetailStat(
                             label: 'DEPART',
-                            value: TransitDataService.formatTime(
-                              route.departureTime,
-                            ),
+                            value: _routeDepartureLabel(route),
                           ),
                         ),
                         Expanded(
@@ -783,6 +781,15 @@ class RouteDetailPage extends StatelessWidget {
       ),
     );
   }
+}
+
+String _routeDepartureLabel(TransitRouteResult route) {
+  for (final leg in route.legs) {
+    if (!leg.isWalking) {
+      return TransitDataService.formatTime(leg.departureTime);
+    }
+  }
+  return TransitDataService.formatTime(route.departureTime);
 }
 
 String _fareLabel(TransitFare? fare) {
