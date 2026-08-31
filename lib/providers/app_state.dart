@@ -21,6 +21,11 @@ class JourneyAlertRecord {
   const JourneyAlertRecord({required this.message, required this.occurredAt});
 }
 
+class _BusMatchState {
+  double? previousDistanceToBoarding;
+  int consecutiveMatches = 0;
+}
+
 class AppState extends ChangeNotifier {
   static const _nextJourneyStorageKey = 'next_journey';
 
@@ -58,10 +63,14 @@ class AppState extends ChangeNotifier {
   bool _liveTransitLoading = false;
   DateTime? _liveTransitUpdatedAt;
   String? _liveTransitError;
-  String? _liveTransitBoardingAlertKey;
   List<RealtimeTransitVehicle> _liveTransitVehicles = const [];
+  RealtimeTransitVehicle? _assignedBus;
+  String? _busDetectionStatus;
+  DateTime? _lastBusAssignmentEvaluation;
+  LocationSnapshot? _latestJourneyLocation;
+  final Map<String, _BusMatchState> _busMatchStates = {};
   List<TransitRouteResult> _routeOptions = const [];
-  String _profileName = 'Aina Koh';
+  String _profileName = 'Guest';
   String _profileEmail = '';
   String _preferredTransport = 'Bus, rail & walking';
   List<SavedPlace> _savedPlaces = const [];
@@ -102,6 +111,8 @@ class AppState extends ChangeNotifier {
   DateTime? get liveTransitUpdatedAt => _liveTransitUpdatedAt;
   bool get liveTransitLoading => _liveTransitLoading;
   String? get liveTransitError => _liveTransitError;
+  RealtimeTransitVehicle? get assignedBus => _assignedBus;
+  String? get busDetectionStatus => _busDetectionStatus;
   bool get supabaseConfigured => _supabaseService.isConfigured;
 
   Future<void> initialize() async {
@@ -119,12 +130,10 @@ class AppState extends ChangeNotifier {
       }
     }
     _isGuest = !(_preferences!.getBool('auth_signed_in') ?? false);
-    _profileName = _isGuest
-        ? 'Guest'
-        : _preferences!.getString('profile_name') ?? 'Aina Koh';
     _profileEmail = _isGuest
         ? ''
         : _preferences!.getString('profile_email') ?? '';
+    _profileName = _isGuest ? 'Guest' : _profileNameForEmail(_profileEmail);
     _loadTravelPreferences();
     _notificationsEnabled =
         _preferences!.getBool('notifications_enabled') ?? true;
@@ -161,7 +170,7 @@ class AppState extends ChangeNotifier {
     _journeyArrived = false;
     _journeyHasLocation = false;
     _lastReachedStationIndex = -1;
-    _liveTransitBoardingAlertKey = null;
+    _resetBusAssignment();
     unawaited(_persistNextRoute(route));
     notifyListeners();
     if (_notificationsEnabled) unawaited(_restartJourneyMonitoring());
@@ -176,7 +185,7 @@ class AppState extends ChangeNotifier {
     _journeyArrived = false;
     _journeyHasLocation = false;
     _lastReachedStationIndex = -1;
-    _liveTransitBoardingAlertKey = null;
+    _resetBusAssignment();
     unawaited(_removePersistedNextRoute());
     unawaited(stopJourneyMonitoring());
     notifyListeners();
@@ -194,6 +203,12 @@ class AppState extends ChangeNotifier {
   void acknowledgeResumeJourneyPrompt() {
     if (!_resumeNextJourneyPrompt) return;
     _resumeNextJourneyPrompt = false;
+    notifyListeners();
+  }
+
+  void requestResumeJourneyPrompt() {
+    if (_nextRoute == null || _resumeNextJourneyPrompt) return;
+    _resumeNextJourneyPrompt = true;
     notifyListeners();
   }
 
@@ -245,6 +260,13 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  void resetJourneySearch() {
+    _transitError = null;
+    _lastRoute = null;
+    _routeOptions = const [];
+    notifyListeners();
+  }
+
   Future<bool> saveFavoriteRoute({
     required String from,
     required String to,
@@ -286,9 +308,17 @@ class AppState extends ChangeNotifier {
     return true;
   }
 
+  Future<void> clearFavoriteRoutes() async {
+    if (_isGuest || _savedPlaces.isEmpty) return;
+    _savedPlaces = const [];
+    await _database.saveSavedPlaces(_savedPlaces);
+    await _syncSavedPlacesToCloud();
+    notifyListeners();
+  }
+
   Future<bool> markNextJourneyDone() async {
     final route = _nextRoute;
-    if (route == null) return false;
+    if (route == null || !_journeyArrived) return false;
 
     final journey = JourneyRecord(
       id: _uuid.v4(),
@@ -309,7 +339,7 @@ class AppState extends ChangeNotifier {
     _journeyArrived = false;
     _journeyHasLocation = false;
     _lastReachedStationIndex = -1;
-    _liveTransitBoardingAlertKey = null;
+    _resetBusAssignment();
     await _removePersistedNextRoute();
     await stopJourneyMonitoring();
     notifyListeners();
@@ -332,10 +362,7 @@ class AppState extends ChangeNotifier {
       }
     }
     await _activateAccount(
-      name:
-          _preferences?.getString('profile_name') ??
-          _preferences?.getString('account_name') ??
-          'Aina Koh',
+      name: _profileNameForEmail(cleanEmail),
       email: cleanEmail,
     );
     await syncCloudData();
@@ -420,6 +447,7 @@ class AppState extends ChangeNotifier {
     _journeyArrived = false;
     _journeyHasLocation = false;
     _lastReachedStationIndex = -1;
+    _resetBusAssignment();
     _journeyAlertHistory = const [];
     unawaited(_removePersistedNextRoute());
     await stopJourneyMonitoring();
@@ -429,6 +457,23 @@ class AppState extends ChangeNotifier {
 
   String _storageScopeForEmail(String email) {
     return email.trim().toLowerCase();
+  }
+
+  String _profileNameForEmail(String email) {
+    final storedName = _preferences?.getString('profile_name')?.trim();
+    if (storedName != null &&
+        storedName.isNotEmpty &&
+        storedName != 'Aina Koh') {
+      return storedName;
+    }
+    final accountName = _preferences?.getString('account_name')?.trim();
+    if (accountName != null &&
+        accountName.isNotEmpty &&
+        accountName != 'Aina Koh') {
+      return accountName;
+    }
+    final emailName = email.trim().split('@').first.trim();
+    return emailName.isEmpty ? 'User' : emailName;
   }
 
   void _loadTravelPreferences() {
@@ -763,10 +808,34 @@ class AppState extends ChangeNotifier {
     try {
       final snapshot = await _realtimeTransitService.fetchForRoute(route);
       if (_nextRoute == route) {
-        _liveTransitVehicles = snapshot.vehicles;
         _liveTransitUpdatedAt = snapshot.fetchedAt;
         _liveTransitError = snapshot.errorMessage;
-        _updateLiveTransitArrivalAlert(route, snapshot.vehicles);
+        _updateAutomaticBusAssignment(route, snapshot.vehicles);
+        final assignedBusId = _assignedBus?.id;
+        RealtimeTransitVehicle? trackedVehicle;
+        if (assignedBusId != null) {
+          for (final vehicle in snapshot.vehicles) {
+            if (_sameVehicleId(vehicle.id, assignedBusId)) {
+              trackedVehicle = vehicle;
+              break;
+            }
+          }
+        }
+        if (trackedVehicle != null) {
+          _updateJourneyProgress(
+            LocationSnapshot(
+              latitude: trackedVehicle.latitude,
+              longitude: trackedVehicle.longitude,
+            ),
+          );
+        }
+        if (assignedBusId == null) {
+          _liveTransitVehicles = snapshot.vehicles;
+        } else {
+          _liveTransitVehicles = snapshot.vehicles
+              .where((vehicle) => _sameVehicleId(vehicle.id, assignedBusId))
+              .toList(growable: false);
+        }
       }
     } catch (_) {
       if (_nextRoute == route) {
@@ -778,50 +847,20 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  void _updateLiveTransitArrivalAlert(
-    TransitRouteResult route,
-    List<RealtimeTransitVehicle> vehicles,
-  ) {
-    if (!_notificationsEnabled) return;
-    TransitJourneyLeg? boardingLeg;
-    for (final leg in route.legs) {
-      if (!leg.isWalking) {
-        boardingLeg = leg;
-        break;
-      }
-    }
-    final boardingStopId = boardingLeg?.fromStopId ?? route.fromStopId;
-    if (boardingStopId.isEmpty) return;
-    final vehiclesAtBoardingStop = vehicles
-        .where((vehicle) => vehicle.currentStopId == boardingStopId)
-        .toList();
-    if (vehiclesAtBoardingStop.isEmpty) {
-      _liveTransitBoardingAlertKey = null;
-      return;
-    }
-
-    final vehicleIds =
-        vehiclesAtBoardingStop.map((vehicle) => vehicle.id).toList()..sort();
-    final alertKey = '$boardingStopId:${vehicleIds.join(',')}';
-    if (_liveTransitBoardingAlertKey == alertKey) return;
-    _liveTransitBoardingAlertKey = alertKey;
-    final vehicle = vehiclesAtBoardingStop.first;
-    final vehicleType = vehicle.mode == 'Bus' ? 'bus' : 'train';
-    final stopName = boardingLeg?.fromStopName ?? route.fromStopName;
-    _publishJourneyAlert(
-      'Live $vehicleType ${vehicle.label} is reported at $stopName.',
-    );
-  }
-
   void _handleJourneyLocation(LocationSnapshot snapshot) {
     if (_nextRoute == null ||
         snapshot.latitude == null ||
         snapshot.longitude == null) {
       return;
     }
+    _latestJourneyLocation = snapshot;
     _locationHistory = [snapshot, ..._locationHistory].take(20).toList();
     _journeyHasLocation = true;
     _updateJourneyProgress(snapshot);
+    final route = _nextRoute;
+    if (route != null) {
+      _updateAutomaticBusAssignment(route, _liveTransitVehicles);
+    }
     notifyListeners();
   }
 
@@ -851,8 +890,9 @@ class AppState extends ChangeNotifier {
       }
     }
 
-    // GPS can drift, so only announce a station when the user is nearby.
-    if (nearestIndex < 0 || nearestDistance > 500) return;
+    // GPS can drift, so only announce a station when the user is within
+    // 250 metres of it.
+    if (nearestIndex < 0 || nearestDistance > 250) return;
     if (nearestIndex <= _lastReachedStationIndex) return;
 
     _lastReachedStationIndex = nearestIndex;
@@ -860,17 +900,262 @@ class AppState extends ChangeNotifier {
     _journeyRemainingStations = remaining;
     final stationName = stations[nearestIndex].name;
     final destinationName = stations.last.name;
+    final nextService = _nextServiceChangeAtStation(
+      route,
+      stations[nearestIndex],
+    );
     if (remaining == 0) {
       _journeyArrived = true;
       _publishJourneyAlert('Arrived at $destinationName.');
       unawaited(stopJourneyMonitoring());
-    } else {
+    } else if (nextService != null) {
       _publishJourneyAlert(
-        remaining == 1
-            ? 'Arrived at $stationName. 1 station remaining until $destinationName.'
-            : 'Arrived at $stationName. $remaining stations remaining until $destinationName.',
+        'Change service at $stationName. Take the $nextService service next.',
       );
+    } else if (nearestIndex == 0) {
+      _publishJourneyAlert(
+        'Arrived at your first station, $stationName. $remaining stations remaining.',
+      );
+    } else if (remaining == 2) {
+      _publishJourneyAlert('2 stations remaining until $destinationName.');
+    } else {
+      // Intermediate stations do not produce an alert.
     }
+  }
+
+  void _resetBusAssignment() {
+    _assignedBus = null;
+    _busDetectionStatus = null;
+    _lastBusAssignmentEvaluation = null;
+    _latestJourneyLocation = null;
+    _busMatchStates.clear();
+    _liveTransitVehicles = const [];
+    _liveTransitUpdatedAt = null;
+    _liveTransitError = null;
+  }
+
+  void _updateAutomaticBusAssignment(
+    TransitRouteResult route,
+    List<RealtimeTransitVehicle> vehicles,
+  ) {
+    final boardingLeg = _firstBusBoardingLeg(route);
+    if (boardingLeg == null) return;
+
+    final location = _latestJourneyLocation;
+    if (location?.latitude == null || location?.longitude == null) {
+      _busDetectionStatus = 'Allow location access to identify your bus.';
+      return;
+    }
+
+    final assignedBus = _assignedBus;
+    if (assignedBus != null) {
+      RealtimeTransitVehicle? updatedBus;
+      for (final vehicle in vehicles) {
+        if (_sameVehicleId(vehicle.id, assignedBus.id)) {
+          updatedBus = vehicle;
+          break;
+        }
+      }
+      if (updatedBus != null) {
+        _assignedBus = updatedBus;
+        _busDetectionStatus =
+            'Bus ${_vehicleLabel(updatedBus)} matched. Live tracking is following it.';
+      } else {
+        _busDetectionStatus =
+            'Tracking bus ${_vehicleLabel(assignedBus)}; waiting for its next live update.';
+      }
+      return;
+    }
+
+    final feedUpdatedAt = _liveTransitUpdatedAt;
+    if (feedUpdatedAt == null ||
+        _lastBusAssignmentEvaluation == feedUpdatedAt) {
+      return;
+    }
+    _lastBusAssignmentEvaluation = feedUpdatedAt;
+
+    final userLatitude = location!.latitude!;
+    final userLongitude = location.longitude!;
+    final boardingLatitude = boardingLeg.fromLatitude;
+    final boardingLongitude = boardingLeg.fromLongitude;
+    final userToBoarding = _distanceMeters(
+      userLatitude,
+      userLongitude,
+      boardingLatitude,
+      boardingLongitude,
+    );
+    if (userToBoarding > 250) {
+      _busDetectionStatus =
+          'Move closer to ${boardingLeg.fromStopName} to identify your bus.';
+      _busMatchStates.clear();
+      return;
+    }
+
+    final routeId = (boardingLeg.routeId ?? route.routeId)
+        ?.trim()
+        .toLowerCase();
+    final candidates = <RealtimeTransitVehicle>[];
+    final previousDistances = <String, double?>{};
+    final candidateDistances = <String, double>{};
+    final boardingStopId = boardingLeg.fromStopId.trim().toLowerCase();
+
+    for (final vehicle in vehicles) {
+      if (vehicle.mode != 'Bus') continue;
+      final vehicleRouteId = vehicle.routeId?.trim().toLowerCase();
+      if (routeId != null &&
+          routeId.isNotEmpty &&
+          vehicleRouteId != null &&
+          vehicleRouteId.isNotEmpty &&
+          vehicleRouteId != routeId) {
+        continue;
+      }
+
+      final vehicleToBoarding = _distanceMeters(
+        vehicle.latitude,
+        vehicle.longitude,
+        boardingLatitude,
+        boardingLongitude,
+      );
+      final vehicleStopId = vehicle.currentStopId?.trim().toLowerCase();
+      final atBoardingStop =
+          boardingStopId.isNotEmpty && vehicleStopId == boardingStopId;
+      if (vehicleToBoarding > 650 && !atBoardingStop) continue;
+
+      final key = _normaliseVehicleId(vehicle);
+      final matchState = _busMatchStates.putIfAbsent(key, _BusMatchState.new);
+      previousDistances[key] = matchState.previousDistanceToBoarding;
+      candidateDistances[key] = vehicleToBoarding;
+      candidates.add(vehicle);
+    }
+
+    if (candidates.isEmpty) {
+      _busMatchStates.clear();
+      _busDetectionStatus = vehicles.isEmpty
+          ? 'Waiting for live bus GPS data near ${boardingLeg.fromStopName}.'
+          : 'Waiting for a route bus near ${boardingLeg.fromStopName}.';
+      return;
+    }
+
+    final userHasLeftBoardingStop = userToBoarding >= 80;
+    if (!userHasLeftBoardingStop) {
+      for (final vehicle in candidates) {
+        final key = _normaliseVehicleId(vehicle);
+        final matchState = _busMatchStates[key]!;
+        matchState.consecutiveMatches = 0;
+        matchState.previousDistanceToBoarding = candidateDistances[key];
+      }
+      _busDetectionStatus =
+          'Bus detected near ${boardingLeg.fromStopName}. Waiting for it to leave the stop.';
+      return;
+    }
+
+    RealtimeTransitVehicle? bestMatch;
+    var bestDistanceToUser = double.infinity;
+    var aBusIsMoving = false;
+    for (final vehicle in candidates) {
+      final key = _normaliseVehicleId(vehicle);
+      final matchState = _busMatchStates[key]!;
+      final vehicleToBoarding = candidateDistances[key]!;
+      final previousDistance = previousDistances[key];
+      final busHasMoved =
+          vehicleToBoarding > 160 &&
+          (previousDistance == null ||
+              vehicleToBoarding > previousDistance + 25);
+      aBusIsMoving = aBusIsMoving || busHasMoved;
+      final userToVehicle = _distanceMeters(
+        userLatitude,
+        userLongitude,
+        vehicle.latitude,
+        vehicle.longitude,
+      );
+      if (busHasMoved && userToVehicle <= 180) {
+        matchState.consecutiveMatches++;
+        if (matchState.consecutiveMatches >= 2 &&
+            userToVehicle < bestDistanceToUser) {
+          bestMatch = vehicle;
+          bestDistanceToUser = userToVehicle;
+        }
+      } else {
+        matchState.consecutiveMatches = 0;
+      }
+      matchState.previousDistanceToBoarding = vehicleToBoarding;
+    }
+
+    if (bestMatch != null) {
+      _assignedBus = bestMatch;
+      _busDetectionStatus =
+          'Bus ${_vehicleLabel(bestMatch)} matched. Live tracking is following it.';
+      _busMatchStates.clear();
+      return;
+    }
+
+    _busDetectionStatus = aBusIsMoving
+        ? 'Bus moving near you. Matching your location…'
+        : 'Bus detected near ${boardingLeg.fromStopName}. Waiting for it to leave the stop.';
+  }
+
+  TransitJourneyLeg? _firstBusBoardingLeg(TransitRouteResult route) {
+    for (final leg in route.legs) {
+      if (leg.mode == 'Bus') return leg;
+    }
+    if (route.mode != 'Bus') return null;
+    return TransitJourneyLeg(
+      mode: route.mode,
+      serviceName: route.serviceName,
+      fromStopName: route.fromStopName,
+      toStopName: route.toStopName,
+      fromStopId: route.fromStopId,
+      toStopId: route.toStopId,
+      departureTime: route.departureTime,
+      arrivalTime: route.arrivalTime,
+      fare: route.fare,
+      durationMinutes: route.durationMinutes,
+      stopsBetween: route.stopsBetween,
+      fromLatitude: route.fromLatitude,
+      fromLongitude: route.fromLongitude,
+      toLatitude: route.toLatitude,
+      toLongitude: route.toLongitude,
+      routeId: route.routeId,
+    );
+  }
+
+  static String _normaliseVehicleId(RealtimeTransitVehicle vehicle) {
+    final id = vehicle.id.trim();
+    return (id.isEmpty ? vehicle.label : id).trim().toLowerCase();
+  }
+
+  static bool _sameVehicleId(String first, String second) {
+    return first.trim().toLowerCase() == second.trim().toLowerCase();
+  }
+
+  static String _vehicleLabel(RealtimeTransitVehicle vehicle) {
+    final id = vehicle.id.trim();
+    return id.isEmpty ? vehicle.label : id;
+  }
+
+  String? _nextServiceChangeAtStation(
+    TransitRouteResult route,
+    TransitStationPoint station,
+  ) {
+    final transitLegs = route.legs.where((leg) => !leg.isWalking).toList();
+    for (var index = 0; index < transitLegs.length - 1; index++) {
+      final currentLeg = transitLegs[index];
+      final nextLeg = transitLegs[index + 1];
+      final currentService = '${currentLeg.mode}:${currentLeg.serviceName}';
+      final nextService = '${nextLeg.mode}:${nextLeg.serviceName}';
+      if (currentService == nextService) continue;
+
+      final transferId = currentLeg.toStopId.isNotEmpty
+          ? currentLeg.toStopId
+          : nextLeg.fromStopId;
+      final sameId = transferId.isNotEmpty && station.id == transferId;
+      final stationName = station.name.trim().toLowerCase();
+      final sameName =
+          stationName == currentLeg.toStopName.trim().toLowerCase() ||
+          stationName == nextLeg.fromStopName.trim().toLowerCase();
+      if (sameId || sameName) return nextLeg.serviceName;
+    }
+    return null;
   }
 
   void _publishJourneyAlert(String message) {

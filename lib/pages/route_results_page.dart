@@ -33,8 +33,22 @@ class _RouteResultsPageState extends State<RouteResultsPage> {
     final routes = state.routeOptions;
     final sortedRoutes = [...routes]..sort(_compareRoutes);
     const modes = ['Bus', 'LRT', 'MRT', 'Mixed'];
+    TransitRouteResult? recommendedRoute;
+    if (_selectedMode == 'All') {
+      if (sortedRoutes.isNotEmpty) recommendedRoute = sortedRoutes.first;
+    } else {
+      for (final route in sortedRoutes) {
+        if (route.mode == _selectedMode) {
+          recommendedRoute = route;
+          break;
+        }
+      }
+    }
     final visibleModes = _selectedMode == 'All'
-        ? modes
+        ? [
+            if (recommendedRoute != null) recommendedRoute.mode,
+            ...modes.where((mode) => mode != recommendedRoute?.mode),
+          ]
         : <String>[_selectedMode];
     final groupedRoutes = <String, Map<String, List<TransitRouteResult>>>{
       for (final mode in modes) mode: <String, List<TransitRouteResult>>{},
@@ -116,8 +130,8 @@ class _RouteResultsPageState extends State<RouteResultsPage> {
                           const SizedBox(height: 3),
                           Text(
                             widget.departureTimeLabel == null
-                                ? 'All scheduled departures · Official timetable'
-                                : 'Departures within 30 minutes of ${widget.departureTimeLabel} · Official timetable',
+                                ? 'All scheduled departures · Official MyRapid planner'
+                                : 'Departures within 30 minutes of ${widget.departureTimeLabel} · Official MyRapid planner',
                             style: const TextStyle(
                               fontSize: 8.5,
                               color: kMutedDark,
@@ -287,7 +301,8 @@ class _RouteResultsPageState extends State<RouteResultsPage> {
                           padding: const EdgeInsets.only(bottom: 8),
                           child: RouteOptionCard(
                             route: service.value[index],
-                            recommended: index == 0,
+                            recommended:
+                                service.value[index] == recommendedRoute,
                             onTap: () => Navigator.of(context).push(
                               MaterialPageRoute(
                                 builder: (_) => RouteDetailPage(
@@ -749,7 +764,7 @@ class RouteDetailPage extends StatelessWidget {
                     const _InfoRow(
                       icon: Icons.verified_outlined,
                       label: 'Data source',
-                      value: 'Official GTFS + MyRapid fares',
+                      value: 'Official MyRapid planner · GTFS fallback',
                     ),
                   ],
                 ),

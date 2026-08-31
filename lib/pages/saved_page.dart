@@ -36,31 +36,57 @@ class _SavedPageState extends State<SavedPage> {
             avatarLabel: avatarInitials(state.profileName),
           ),
           const SizedBox(height: 22),
-          PageTitle(
-            kicker: 'YOUR SHORTCUTS',
-            title: 'Saved & history',
-            trailing: GestureDetector(
-              onTap: () => widget.onMessage('More saved options'),
-              child: Icon(
-                Icons.more_horiz_rounded,
-                size: 18,
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ),
+          PageTitle(kicker: 'YOUR SHORTCUTS', title: 'Saved & history'),
           const SizedBox(height: 20),
-          SectionHeading(
-            title: 'Favourite places',
-            trailing: state.isGuest ? 'Sign in to add' : '+ Add new',
-            onTrailingTap: () {
-              if (state.isGuest) {
-                Navigator.of(
-                  context,
-                ).push(MaterialPageRoute(builder: (_) => const LoginPage()));
-              } else {
-                state.selectTab(1);
-              }
-            },
+          Row(
+            children: [
+              Text(
+                'Favourite places',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: theme.colorScheme.onSurface,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const Spacer(),
+              if (!state.isGuest) ...[
+                GestureDetector(
+                  onTap: state.savedPlaces.isEmpty
+                      ? null
+                      : () => _clearFavorites(context),
+                  child: Text(
+                    'Clear',
+                    style: TextStyle(
+                      fontSize: 9,
+                      color: state.savedPlaces.isEmpty
+                          ? theme.colorScheme.onSurfaceVariant
+                          : kPurple,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+              ],
+              GestureDetector(
+                onTap: () {
+                  if (state.isGuest) {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const LoginPage()),
+                    );
+                  } else {
+                    state.selectTab(1);
+                  }
+                },
+                child: Text(
+                  state.isGuest ? 'Sign in to add' : '+ Add new',
+                  style: const TextStyle(
+                    fontSize: 9,
+                    color: kPurple,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 8),
           if (state.isGuest)
@@ -303,6 +329,35 @@ class _SavedPageState extends State<SavedPage> {
     return remove == true;
   }
 
+  Future<void> _clearFavorites(BuildContext context) async {
+    final state = context.read<AppState>();
+    if (state.savedPlaces.isEmpty) return;
+
+    final clear = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Clear favourite routes?'),
+        content: const Text(
+          'This will remove all saved favourite routes from your account.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Keep'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Clear all'),
+          ),
+        ],
+      ),
+    );
+    if (clear != true || !context.mounted) return;
+
+    await state.clearFavoriteRoutes();
+    if (context.mounted) widget.onMessage('Favourite routes cleared');
+  }
+
   Future<void> _removeFavorite(BuildContext context, SavedPlace place) async {
     final removed = await context.read<AppState>().removeFavoriteRoute(
       place.id,
@@ -403,8 +458,6 @@ class SavedItem extends StatelessWidget {
                     if (eyebrow != null) const SizedBox(height: 2),
                     Text(
                       title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 10.5,
                         color: theme.colorScheme.onSurface,
@@ -414,8 +467,6 @@ class SavedItem extends StatelessWidget {
                     const SizedBox(height: 2),
                     Text(
                       subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 8.5,
                         color: theme.colorScheme.onSurfaceVariant,

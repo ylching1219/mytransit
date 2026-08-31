@@ -30,11 +30,20 @@ class SmartMoveApp extends StatefulWidget {
   State<SmartMoveApp> createState() => _SmartMoveAppState();
 }
 
-class _SmartMoveAppState extends State<SmartMoveApp> {
+class _SmartMoveAppState extends State<SmartMoveApp>
+    with WidgetsBindingObserver {
   final _messengerKey = GlobalKey<ScaffoldMessengerState>();
+  final _navigatorKey = GlobalKey<NavigatorState>();
   AppState? _observedState;
   String? _lastShownJourneyAlert;
   bool _resumePromptScheduled = false;
+  bool _activityWasDetached = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
 
   @override
   void didChangeDependencies() {
@@ -78,8 +87,22 @@ class _SmartMoveAppState extends State<SmartMoveApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _observedState?.removeListener(_onAppStateChanged);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState lifecycleState) {
+    if (lifecycleState == AppLifecycleState.detached) {
+      _activityWasDetached = true;
+      return;
+    }
+    if (lifecycleState != AppLifecycleState.resumed || !_activityWasDetached) {
+      return;
+    }
+    _activityWasDetached = false;
+    _observedState?.requestResumeJourneyPrompt();
   }
 
   @override
@@ -95,6 +118,7 @@ class _SmartMoveAppState extends State<SmartMoveApp> {
       debugShowCheckedModeBanner: false,
       title: 'MyTransitAssist',
       scaffoldMessengerKey: _messengerKey,
+      navigatorKey: _navigatorKey,
       themeMode: state.darkMode ? ThemeMode.dark : ThemeMode.light,
       theme: ThemeData(
         useMaterial3: true,
@@ -171,10 +195,21 @@ class _SmartMoveAppState extends State<SmartMoveApp> {
   Future<void> _showResumeJourneyDialog() async {
     final state = context.read<AppState>();
     final route = state.nextRoute;
-    if (route == null) return;
+    final navigatorContext = _navigatorKey.currentContext;
+    if (route == null) {
+      _resumePromptScheduled = false;
+      return;
+    }
+    if (navigatorContext == null) {
+      _resumePromptScheduled = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _showResumeJourneyDialog();
+      });
+      return;
+    }
 
     final shouldContinue = await showDialog<bool>(
-      context: context,
+      context: navigatorContext,
       barrierDismissible: false,
       builder: (dialogContext) {
         return AlertDialog(
@@ -200,11 +235,14 @@ class _SmartMoveAppState extends State<SmartMoveApp> {
     );
 
     if (!mounted) return;
+    _resumePromptScheduled = false;
     final currentState = context.read<AppState>();
     final currentRoute = currentState.nextRoute;
+    final navigator = _navigatorKey.currentState;
     if (shouldContinue == true && currentRoute != null) {
       currentState.acknowledgeResumeJourneyPrompt();
-      await Navigator.of(context).push(
+      if (navigator == null) return;
+      await navigator.push(
         MaterialPageRoute(
           builder: (_) => LiveTrackingPage(route: currentRoute),
         ),

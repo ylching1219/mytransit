@@ -192,6 +192,9 @@ class TransitDataService {
   static final _geocodeEndpoint = Uri.parse(
     'https://jp-web.myrapid.com.my/endpoint/geoservice/geocode',
   );
+  static final _journeyPlannerEndpoint = Uri.parse(
+    'https://jp-web.myrapid.com.my/endpoint/geoservice/journeyPlanner',
+  );
   static const _busFareFallback = TransitFare(
     adult: '1.00',
     cash: '1.00',
@@ -212,6 +215,33 @@ class TransitDataService {
   void dispose() => _client.close();
 
   Future<List<TransitRouteResult>> findRoutes({
+    required String from,
+    required String to,
+    int? departureAfterSeconds,
+    int? departureBeforeSeconds,
+  }) async {
+    try {
+      final plannerRoutes = await _findRoutesWithJourneyPlanner(
+        from: from,
+        to: to,
+        departureAfterSeconds: departureAfterSeconds,
+        departureBeforeSeconds: departureBeforeSeconds,
+      );
+      if (plannerRoutes.isNotEmpty) return plannerRoutes;
+    } catch (_) {
+      // Keep the local GTFS search as a fallback when the official planner is
+      // unavailable or does not recognise one of the entered places.
+    }
+
+    return _findRoutesFromStaticFeeds(
+      from: from,
+      to: to,
+      departureAfterSeconds: departureAfterSeconds,
+      departureBeforeSeconds: departureBeforeSeconds,
+    );
+  }
+
+  Future<List<TransitRouteResult>> _findRoutesFromStaticFeeds({
     required String from,
     required String to,
     int? departureAfterSeconds,
@@ -247,10 +277,9 @@ class TransitDataService {
     }
 
     // A typed value is often an area, mall, or landmark rather than an
-    // exact GTFS stop name. Resolve it through the official MyRapid planner,
-    // then search the nearest stops in both the bus and rail feeds. These
-    // nearby stops are also needed to find a bus-to-rail transfer, even when
-    // a direct result was found first.
+    // exact GTFS stop name. Resolve it through MyRapid geocoding, then search
+    // the nearest stops in both the bus and rail feeds. These nearby stops
+    // are also needed for the local bus-to-rail fallback.
     if (feeds.isNotEmpty) {
       final originStops = await _resolveStopCandidates(from, feeds);
       final destinationStops = await _resolveStopCandidates(to, feeds);
@@ -854,6 +883,542 @@ class TransitDataService {
     return math.max(1, (distanceMeters / 80).ceil());
   }
 
+  Future<List<TransitRouteResult>> _findRoutesWithJourneyPlanner({
+    required String from,
+    required String to,
+    int? departureAfterSeconds,
+    int? departureBeforeSeconds,
+  }) async {
+    final originPlaces = await _geocodePlace(from);
+    final destinationPlaces = await _geocodePlace(to);
+    if (originPlaces.isEmpty || destinationPlaces.isEmpty) return const [];
+
+    final origin = originPlaces.first;
+    final destination = destinationPlaces.first;
+    final departureDateTime = _plannerDepartureDateTime(departureAfterSeconds);
+    final endpoint = _journeyPlannerEndpoint.replace(
+      queryParameters: {
+        'agency': 'rapidkl',
+        'flng': origin.longitude.toString(),
+        'flat': origin.latitude.toString(),
+        'tlng': destination.longitude.toString(),
+        'tlat': destination.latitude.toString(),
+        'mode': 'mix',
+        'type': 'fastest',
+        'departure_datetime': _formatPlannerDateTime(departureDateTime),
+      },
+    );
+    final response = await _client
+        .get(
+          endpoint,
+          headers: const {
+            'Accept': 'application/json',
+            'User-Agent': 'MyTransitAssist/1.0',
+          },
+        )
+        .timeout(const Duration(seconds: 25));
+    if (response.statusCode != 200) {
+      throw TransitDataException(
+        'MyRapid journey planner returned HTTP ${response.statusCode}.',
+      );
+    }
+
+    final payload = _plannerMap(jsonDecode(response.body));
+    if (payload == null) {
+      throw const TransitDataException(
+        'MyRapid journey planner returned an invalid response.',
+      );
+    }
+    final status = payload['status']?.toString().trim().toUpperCase();
+    if (status != null &&
+        status.isNotEmpty &&
+        status != 'OK' &&
+        status != 'SUCCESS') {
+      throw TransitDataException(
+        payload['message']?.toString() ??
+            'MyRapid could not plan this journey.',
+      );
+    }
+
+    final rawRoutes = payload['routes'];
+    if (rawRoutes is! List) return const [];
+
+    final results = <TransitRouteResult>[];
+    for (final rawRoute in rawRoutes) {
+      final route = _plannerMap(rawRoute);
+      if (route == null) continue;
+      final parsed = _parsePlannerRoute(
+        route,
+        origin: origin,
+        destination: destination,
+      );
+      if (parsed == null) continue;
+
+      final departureSeconds = _gtfsSeconds(parsed.departureTime);
+      if (departureAfterSeconds != null &&
+          departureSeconds < departureAfterSeconds) {
+        continue;
+      }
+      if (departureBeforeSeconds != null &&
+          departureSeconds > departureBeforeSeconds) {
+        continue;
+      }
+      results.add(parsed);
+    }
+
+    final unique = <String, TransitRouteResult>{};
+    for (final result in results) {
+      final key = [
+        result.serviceName,
+        result.fromStopName,
+        result.toStopName,
+        result.departureTime,
+        result.arrivalTime,
+      ].join('|');
+      unique.putIfAbsent(key, () => result);
+    }
+    return unique.values.toList()..sort(_compareJourneyResults);
+  }
+
+  TransitRouteResult? _parsePlannerRoute(
+    Map<String, dynamic> route, {
+    required _GeocodedPlace origin,
+    required _GeocodedPlace destination,
+  }) {
+    final rawLegs = route['legs'];
+    if (rawLegs is! List || rawLegs.isEmpty) return null;
+
+    final overallFare = _plannerFare(
+      route['alt_fare_price'] ?? route['fare'] ?? route['fare_details'],
+    );
+    final legs = <TransitJourneyLeg>[];
+    var current = _PlannerPoint(
+      name: origin.name,
+      id: '',
+      latitude: origin.latitude,
+      longitude: origin.longitude,
+    );
+    var currentTime =
+        _plannerTimeOfDay(
+          route['estimated_departure_time'] ?? route['departure_time'],
+        ) ??
+        '00:00:00';
+
+    for (var index = 0; index < rawLegs.length; index++) {
+      final rawLeg = _plannerMap(rawLegs[index]);
+      if (rawLeg == null) continue;
+      final type = (rawLeg['type'] ?? rawLeg['mode'] ?? '')
+          .toString()
+          .trim()
+          .toLowerCase();
+      final details = _plannerMap(rawLeg['route_details']);
+      final isWalking =
+          type.contains('pedestrain') ||
+          type.contains('pedestrian') ||
+          type == 'walk' ||
+          type == 'walking' ||
+          (details == null && !type.contains('transit'));
+
+      if (isWalking) {
+        final nextTransitPoint = _nextPlannerTransitPoint(rawLegs, index);
+        final rawFrom = _plannerPointFromMap(_plannerMap(rawLeg['from']));
+        final rawTo = _plannerPointFromMap(_plannerMap(rawLeg['to']));
+        final walkFrom = rawFrom ?? current;
+        final walkTo =
+            rawTo ??
+            nextTransitPoint ??
+            _PlannerPoint(
+              name: destination.name,
+              id: '',
+              latitude: destination.latitude,
+              longitude: destination.longitude,
+            );
+        final departure =
+            _plannerTimeOfDay(
+              rawLeg['estimated_start_arrival_time'] ??
+                  rawLeg['estimated_departure_time'] ??
+                  rawLeg['departure_time'],
+            ) ??
+            currentTime;
+        final rawDurationSeconds = _plannerInt(
+          rawLeg['duration'] ?? rawLeg['duration_seconds'],
+        );
+        final durationMinutes = rawDurationSeconds == null
+            ? _walkingMinutes(
+                _distanceMeters(
+                  walkFrom.latitude,
+                  walkFrom.longitude,
+                  walkTo.latitude,
+                  walkTo.longitude,
+                ),
+              )
+            : math.max(1, (rawDurationSeconds / 60).ceil());
+        final arrival =
+            _plannerTimeOfDay(
+              rawLeg['estimated_end_arrival_time'] ??
+                  rawLeg['arrival_time'] ??
+                  rawLeg['estimated_arrival_time'],
+            ) ??
+            _addPlannerMinutes(departure, durationMinutes);
+        legs.add(
+          TransitJourneyLeg(
+            mode: 'Walk',
+            serviceName: 'Walking',
+            fromStopName: walkFrom.name,
+            toStopName: walkTo.name,
+            fromStopId: walkFrom.id,
+            toStopId: walkTo.id,
+            departureTime: departure,
+            arrivalTime: arrival,
+            fare: null,
+            durationMinutes: durationMinutes,
+            stopsBetween: 0,
+            fromLatitude: walkFrom.latitude,
+            fromLongitude: walkFrom.longitude,
+            toLatitude: walkTo.latitude,
+            toLongitude: walkTo.longitude,
+            routeId: null,
+          ),
+        );
+        current = walkTo;
+        currentTime = arrival;
+        continue;
+      }
+
+      final points = _plannerStepPoints(rawLeg['steps']);
+      final rawFrom = _plannerPointFromMap(_plannerMap(rawLeg['from']));
+      final rawTo = _plannerPointFromMap(_plannerMap(rawLeg['to']));
+      final transitFrom = points.isNotEmpty ? points.first : rawFrom ?? current;
+      final transitTo = points.length > 1
+          ? points.last
+          : rawTo ??
+                (index == rawLegs.length - 1
+                    ? _PlannerPoint(
+                        name: destination.name,
+                        id: '',
+                        latitude: destination.latitude,
+                        longitude: destination.longitude,
+                      )
+                    : current);
+      final routeDetails = details ?? const <String, dynamic>{};
+      final serviceName = _plannerServiceName(routeDetails);
+      final mode = _plannerMode(routeDetails);
+      final departure =
+          _plannerTimeOfDay(
+            rawLeg['estimated_departure_time'] ??
+                rawLeg['estimated_start_arrival_time'] ??
+                rawLeg['departure_time'],
+          ) ??
+          currentTime;
+      final rawDurationSeconds = _plannerInt(rawLeg['duration']);
+      final arrival =
+          _plannerTimeOfDay(
+            rawLeg['estimated_end_arrival_time'] ??
+                rawLeg['arrival_time'] ??
+                rawLeg['estimated_arrival_time'],
+          ) ??
+          _addPlannerMinutes(
+            departure,
+            rawDurationSeconds == null
+                ? 1
+                : math.max(1, (rawDurationSeconds / 60).ceil()),
+          );
+      final durationMinutes = rawDurationSeconds == null
+          ? _minutesBetween(departure, arrival)
+          : math.max(1, (rawDurationSeconds / 60).ceil());
+      final passingStations = points
+          .map(
+            (point) => TransitStationPoint(
+              id: point.id,
+              name: point.name,
+              latitude: point.latitude,
+              longitude: point.longitude,
+            ),
+          )
+          .toList(growable: false);
+      final routeId = _plannerString(
+        routeDetails['route_id'] ?? rawLeg['route_id'],
+      );
+      legs.add(
+        TransitJourneyLeg(
+          mode: mode,
+          serviceName: serviceName,
+          fromStopName: transitFrom.name,
+          toStopName: transitTo.name,
+          fromStopId: transitFrom.id,
+          toStopId: transitTo.id,
+          departureTime: departure,
+          arrivalTime: arrival,
+          fare: null,
+          durationMinutes: durationMinutes,
+          stopsBetween: math.max(0, points.length - 1),
+          fromLatitude: transitFrom.latitude,
+          fromLongitude: transitFrom.longitude,
+          toLatitude: transitTo.latitude,
+          toLongitude: transitTo.longitude,
+          passingStops: passingStations.map((point) => point.name).toList(),
+          passingStations: passingStations,
+          routeId: routeId,
+        ),
+      );
+      current = transitTo;
+      currentTime = arrival;
+    }
+
+    if (legs.isEmpty) return null;
+    final transitLegs = legs.where((leg) => !leg.isWalking).toList();
+    final firstLeg = legs.first;
+    final lastLeg = legs.last;
+    final distinctModes = transitLegs.map((leg) => leg.mode).toSet();
+    final mode = transitLegs.isEmpty
+        ? 'Walk'
+        : distinctModes.length > 1
+        ? 'Mixed'
+        : transitLegs.first.mode;
+    final serviceName = transitLegs.isEmpty
+        ? 'Walking'
+        : transitLegs.map((leg) => leg.serviceName).join(' + ');
+    final firstTransit = transitLegs.isEmpty ? firstLeg : transitLegs.first;
+    final lastTransit = transitLegs.isEmpty ? lastLeg : transitLegs.last;
+    String? routeId;
+    for (final leg in transitLegs) {
+      if (leg.routeId != null && leg.routeId!.trim().isNotEmpty) {
+        routeId = leg.routeId;
+        break;
+      }
+    }
+    final routeDeparture =
+        _plannerTimeOfDay(
+          route['estimated_departure_time'] ?? route['departure_time'],
+        ) ??
+        firstLeg.departureTime;
+    final routeArrival =
+        _plannerTimeOfDay(route['estimated_arrival_time']) ??
+        lastLeg.arrivalTime;
+    final rawTotalDuration = _plannerInt(route['total_duration']);
+    final durationMinutes = rawTotalDuration == null
+        ? _minutesBetween(routeDeparture, routeArrival)
+        : math.max(1, (rawTotalDuration / 60).ceil());
+
+    return TransitRouteResult(
+      fromStopName: firstTransit.fromStopName,
+      toStopName: lastTransit.toStopName,
+      fromStopId: firstTransit.fromStopId,
+      toStopId: lastTransit.toStopId,
+      serviceName: serviceName,
+      mode: mode,
+      departureTime: routeDeparture,
+      arrivalTime: routeArrival,
+      fare: overallFare,
+      durationMinutes: durationMinutes,
+      stopsBetween: transitLegs.fold<int>(
+        0,
+        (total, leg) => total + leg.stopsBetween,
+      ),
+      fromLatitude: firstTransit.fromLatitude,
+      fromLongitude: firstTransit.fromLongitude,
+      toLatitude: lastTransit.toLatitude,
+      toLongitude: lastTransit.toLongitude,
+      legs: legs,
+      routeId: routeId,
+    );
+  }
+
+  _PlannerPoint? _nextPlannerTransitPoint(List<dynamic> rawLegs, int index) {
+    for (var nextIndex = index + 1; nextIndex < rawLegs.length; nextIndex++) {
+      final nextLeg = _plannerMap(rawLegs[nextIndex]);
+      if (nextLeg == null) continue;
+      final type = (nextLeg['type'] ?? nextLeg['mode'] ?? '')
+          .toString()
+          .toLowerCase();
+      final details = _plannerMap(nextLeg['route_details']);
+      final isWalking =
+          type.contains('pedestrain') ||
+          type.contains('pedestrian') ||
+          type == 'walk' ||
+          type == 'walking' ||
+          (details == null && !type.contains('transit'));
+      if (isWalking) continue;
+      final points = _plannerStepPoints(nextLeg['steps']);
+      return points.isNotEmpty
+          ? points.first
+          : _plannerPointFromMap(_plannerMap(nextLeg['from']));
+    }
+    return null;
+  }
+
+  List<_PlannerPoint> _plannerStepPoints(dynamic rawSteps) {
+    if (rawSteps is! List) return const [];
+    final points = <_PlannerPoint>[];
+    for (final rawStep in rawSteps) {
+      final point = _plannerPointFromMap(_plannerMap(rawStep));
+      if (point != null && point.name.trim().isNotEmpty) points.add(point);
+    }
+    return points;
+  }
+
+  _PlannerPoint? _plannerPointFromMap(Map<String, dynamic>? value) {
+    if (value == null) return null;
+    final coordinates = _plannerCoordinates(value);
+    if (coordinates == null) return null;
+    final name =
+        _plannerString(
+          value['stop_name'] ??
+              value['poiname'] ??
+              value['name'] ??
+              value['title'] ??
+              value['label'],
+        ) ??
+        '';
+    final id =
+        _plannerString(
+          value['stop_id'] ?? value['poi_id'] ?? value['id'] ?? value['stopId'],
+        ) ??
+        '';
+    return _PlannerPoint(
+      name: name,
+      id: id,
+      latitude: coordinates.$1,
+      longitude: coordinates.$2,
+    );
+  }
+
+  (double, double)? _plannerCoordinates(Map<String, dynamic> value) {
+    final geometry = _plannerMap(value['geometry']);
+    final location = _plannerMap(value['location']);
+    final nestedCoordinates =
+        geometry?['coordinates'] ??
+        location?['coordinates'] ??
+        value['coordinates'];
+    if (nestedCoordinates is List && nestedCoordinates.length >= 2) {
+      final longitude = _plannerDouble(nestedCoordinates[0]);
+      final latitude = _plannerDouble(nestedCoordinates[1]);
+      if (latitude != null && longitude != null) {
+        return (latitude, longitude);
+      }
+    }
+
+    final latitude = _plannerDouble(
+      value['stop_lat'] ?? value['latitude'] ?? value['lat'],
+    );
+    final longitude = _plannerDouble(
+      value['stop_lon'] ?? value['longitude'] ?? value['lon'] ?? value['lng'],
+    );
+    if (latitude == null || longitude == null) return null;
+    return (latitude, longitude);
+  }
+
+  TransitFare? _plannerFare(dynamic rawFare) {
+    final fare = _plannerMap(rawFare);
+    if (fare == null) return null;
+    final adult = _plannerMoney(fare['adult']);
+    final cash = _plannerMoney(fare['cash']);
+    final cashless = _plannerMoney(fare['cashless']);
+    final concession = _plannerMoney(fare['concession'] ?? fare['consession']);
+    if (adult == null && cash == null && cashless == null) return null;
+    return TransitFare(
+      adult: adult ?? cash ?? cashless ?? '0.00',
+      cash: cash ?? adult ?? cashless ?? '0.00',
+      cashless: cashless ?? adult ?? cash ?? '0.00',
+      concession: concession ?? adult ?? '0.00',
+    );
+  }
+
+  String _plannerServiceName(Map<String, dynamic> details) {
+    final shortName = _plannerString(
+      details['route_short_name'] ?? details['short_name'],
+    );
+    final longName = _plannerString(
+      details['route_long_name'] ?? details['long_name'],
+    );
+    final name = shortName ?? longName ?? 'Transit service';
+    return name;
+  }
+
+  String _plannerMode(Map<String, dynamic> details) {
+    final routeType = _plannerInt(details['route_type']);
+    if (routeType == 3) return 'Bus';
+
+    final description = [
+      details['mode'],
+      details['category'],
+      details['route_type_name'],
+      details['route_long_name'],
+      details['route_short_name'],
+    ].whereType<Object>().join(' ').toLowerCase();
+    if (description.contains('bus') || description.contains('brt')) {
+      return 'Bus';
+    }
+    if (description.contains('lrt') || description.contains('monorail')) {
+      return 'LRT';
+    }
+    if (description.contains('mrt')) return 'MRT';
+
+    if (routeType == 1 || routeType == 2) return 'MRT';
+    return 'MRT';
+  }
+
+  static Map<String, dynamic>? _plannerMap(dynamic value) {
+    if (value is! Map) return null;
+    return value.map((key, value) => MapEntry(key.toString(), value));
+  }
+
+  static String? _plannerString(dynamic value) {
+    if (value == null) return null;
+    final text = value.toString().trim();
+    return text.isEmpty ? null : text;
+  }
+
+  static int? _plannerInt(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.round();
+    return int.tryParse(value?.toString().trim() ?? '');
+  }
+
+  static double? _plannerDouble(dynamic value) {
+    if (value is num) return value.toDouble();
+    return double.tryParse(value?.toString().trim() ?? '');
+  }
+
+  static String? _plannerMoney(dynamic value) {
+    final text = _plannerString(value);
+    if (text == null) return null;
+    final cleaned = text.replaceAll(RegExp(r'[^0-9.]'), '');
+    final amount = double.tryParse(cleaned);
+    return amount?.toStringAsFixed(2);
+  }
+
+  static DateTime _plannerDepartureDateTime(int? departureAfterSeconds) {
+    final now = DateTime.now().toUtc().add(const Duration(hours: 8));
+    final startOfDay = DateTime(now.year, now.month, now.day);
+    return startOfDay.add(Duration(seconds: departureAfterSeconds ?? 0));
+  }
+
+  static String _formatPlannerDateTime(DateTime value) {
+    String twoDigits(int number) => number.toString().padLeft(2, '0');
+    return '${value.year.toString().padLeft(4, '0')}-'
+        '${twoDigits(value.month)}-${twoDigits(value.day)} '
+        '${twoDigits(value.hour)}:${twoDigits(value.minute)}:${twoDigits(value.second)}';
+  }
+
+  static String? _plannerTimeOfDay(dynamic rawValue) {
+    final value = _plannerString(rawValue);
+    if (value == null) return null;
+    final match = RegExp(
+      r'(?<!\d)(\d{1,2}):(\d{2})(?::(\d{2}))?',
+    ).firstMatch(value);
+    if (match == null) return null;
+    final hours = int.tryParse(match.group(1)!) ?? 0;
+    final minutes = int.tryParse(match.group(2)!) ?? 0;
+    final seconds = int.tryParse(match.group(3) ?? '0') ?? 0;
+    if (minutes > 59 || seconds > 59) return null;
+    return _formatGtfsTime(hours * 3600 + minutes * 60 + seconds);
+  }
+
+  static String _addPlannerMinutes(String value, int minutes) {
+    return _formatGtfsTime(_gtfsSeconds(value) + minutes * 60);
+  }
+
   Future<List<TransitPlaceSuggestion>> searchPlaceSuggestions({
     required String query,
     int limit = 8,
@@ -901,52 +1466,100 @@ class TransitDataService {
   }
 
   Future<List<_GeocodedPlace>> _geocodePlace(String query) async {
-    try {
-      final endpoint = _geocodeEndpoint.replace(
-        queryParameters: {
-          'scope': 'WMcentral',
-          'agency': 'rapidkl',
-          'input': query,
-        },
-      );
-      final response = await _client
-          .get(
-            endpoint,
-            headers: const {
-              'Accept': 'application/json',
-              'User-Agent': 'MyTransitAssist/1.0',
-            },
-          )
-          .timeout(const Duration(seconds: 10));
-      if (response.statusCode != 200) return const [];
-
-      final payload = jsonDecode(response.body);
-      if (payload is! Map<String, dynamic>) return const [];
-      final rawResults = payload['results'];
-      if (rawResults is! List) return const [];
-
-      final places = <_GeocodedPlace>[];
-      for (final rawResult in rawResults) {
-        if (rawResult is! Map<String, dynamic>) continue;
-        final rawGeometry = rawResult['geometry'];
-        if (rawGeometry is! Map<String, dynamic>) continue;
-        final rawCoordinates = rawGeometry['coordinates'];
-        if (rawCoordinates is! List || rawCoordinates.length < 2) continue;
-        final longitude = (rawCoordinates[0] as num?)?.toDouble();
-        final latitude = (rawCoordinates[1] as num?)?.toDouble();
-        if (latitude == null || longitude == null) continue;
-        places.add(
-          _GeocodedPlace(
-            name: rawResult['poiname']?.toString() ?? query,
-            latitude: latitude,
-            longitude: longitude,
-          ),
+    for (final candidate in _geocodeQueryVariants(query)) {
+      try {
+        final endpoint = _geocodeEndpoint.replace(
+          queryParameters: {
+            'scope': 'WMcentral',
+            'agency': 'rapidkl',
+            'input': candidate,
+          },
         );
+        final response = await _client
+            .get(
+              endpoint,
+              headers: const {
+                'Accept': 'application/json',
+                'User-Agent': 'MyTransitAssist/1.0',
+              },
+            )
+            .timeout(const Duration(seconds: 10));
+        if (response.statusCode != 200) continue;
+
+        final payload = jsonDecode(response.body);
+        if (payload is! Map<String, dynamic>) continue;
+        final rawResults = payload['results'];
+        if (rawResults is! List) continue;
+
+        final places = <_GeocodedPlace>[];
+        for (final rawResult in rawResults) {
+          if (rawResult is! Map<String, dynamic>) continue;
+          final rawGeometry = rawResult['geometry'];
+          if (rawGeometry is! Map<String, dynamic>) continue;
+          final rawCoordinates = rawGeometry['coordinates'];
+          if (rawCoordinates is! List || rawCoordinates.length < 2) continue;
+          final longitude = (rawCoordinates[0] as num?)?.toDouble();
+          final latitude = (rawCoordinates[1] as num?)?.toDouble();
+          if (latitude == null || longitude == null) continue;
+          places.add(
+            _GeocodedPlace(
+              name: rawResult['poiname']?.toString() ?? candidate,
+              latitude: latitude,
+              longitude: longitude,
+            ),
+          );
+        }
+        if (places.isNotEmpty) {
+          _sortGeocodedPlacesForQuery(places, query);
+          return places;
+        }
+      } catch (_) {
+        // Try the next normalized form when the exact label is not indexed.
       }
-      return places;
-    } catch (_) {
-      return const [];
     }
+    return const [];
+  }
+
+  List<String> _geocodeQueryVariants(String query) {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) return const [];
+
+    final withoutTransitPrefix = trimmed.replaceFirst(
+      RegExp(r'^(?:bus|lrt|mrt|ktm|monorail)\s+', caseSensitive: false),
+      '',
+    );
+    final withoutDirection = withoutTransitPrefix.replaceFirst(
+      RegExp(
+        r'\s*\((?:opp|opposite|northbound|southbound|eastbound|westbound)\)\s*$',
+        caseSensitive: false,
+      ),
+      '',
+    );
+    return <String>{
+      trimmed,
+      withoutTransitPrefix.trim(),
+      withoutDirection.trim(),
+    }.where((value) => value.isNotEmpty).toList();
+  }
+
+  void _sortGeocodedPlacesForQuery(List<_GeocodedPlace> places, String query) {
+    final wantsOpposite = RegExp(
+      r'\b(?:opp|opposite)\b',
+      caseSensitive: false,
+    ).hasMatch(query);
+    places.sort((left, right) {
+      int score(_GeocodedPlace place) {
+        final isOpposite = RegExp(
+          r'\b(?:opp|opposite)\b',
+          caseSensitive: false,
+        ).hasMatch(place.name);
+        if (wantsOpposite && isOpposite) return 0;
+        if (wantsOpposite && !isOpposite) return 1;
+        return 0;
+      }
+
+      return score(left).compareTo(score(right));
+    });
   }
 
   Future<_GtfsFeed> _loadRailFeed() {
@@ -1450,7 +2063,14 @@ class TransitDataService {
   }
 
   static String _normalise(String value) {
-    return value.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+    final withoutTransitPrefix = value.trim().replaceFirst(
+      RegExp(r'^(?:bus|lrt|mrt|ktm|monorail)\s+', caseSensitive: false),
+      '',
+    );
+    return withoutTransitPrefix.toLowerCase().replaceAll(
+      RegExp(r'[^a-z0-9]'),
+      '',
+    );
   }
 
   static int _minutesBetween(String departure, String arrival) {
@@ -1550,6 +2170,20 @@ class _GeocodedPlace {
   });
 }
 
+class _PlannerPoint {
+  final String name;
+  final String id;
+  final double latitude;
+  final double longitude;
+
+  const _PlannerPoint({
+    required this.name,
+    required this.id,
+    required this.latitude,
+    required this.longitude,
+  });
+}
+
 class _GtfsFeed {
   final Map<String, _GtfsStop> stops;
   final Map<String, _GtfsRoute> routes;
@@ -1597,9 +2231,15 @@ class _GtfsFeed {
       final id = row['route_id'] ?? '';
       if (id.isEmpty) continue;
       routes[id] = _GtfsRoute(
-        displayName: (row['route_long_name'] ?? '').trim().isNotEmpty
-            ? row['route_long_name']!.trim()
-            : (row['route_short_name'] ?? id).trim(),
+        // Use the public service code (for example T250 or 250) as the
+        // compact label shown in route cards. The long name contains the
+        // line's terminal pair and is useful as supporting information, but
+        // it can be misleading when it is displayed as the selected service.
+        displayName: (row['route_short_name'] ?? '').trim().isNotEmpty
+            ? row['route_short_name']!.trim()
+            : ((row['route_long_name'] ?? '').trim().isNotEmpty
+                  ? row['route_long_name']!.trim()
+                  : id.trim()),
         mode: _inferMode(
           '${row['route_short_name'] ?? ''} ${row['route_long_name'] ?? ''} ${row['category'] ?? ''}',
           fallbackMode,

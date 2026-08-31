@@ -335,6 +335,26 @@ String? _passwordValidator(String? value) {
   return null;
 }
 
+InputDecoration _profileInputDecoration(
+  BuildContext context, {
+  required String label,
+  String? hint,
+  required IconData icon,
+}) {
+  final isDark = Theme.of(context).brightness == Brightness.dark;
+  return InputDecoration(
+    labelText: label,
+    hintText: hint,
+    labelStyle: TextStyle(color: isDark ? const Color(0xFFD7E6E8) : kMutedDark),
+    floatingLabelStyle: TextStyle(
+      color: isDark ? const Color(0xFF76D8CD) : kTeal,
+      fontWeight: FontWeight.w700,
+    ),
+    hintStyle: TextStyle(color: isDark ? const Color(0xFFC1D5D8) : kMuted),
+    prefixIcon: Icon(icon, color: isDark ? const Color(0xFFD0E4E6) : kPurple),
+  );
+}
+
 class ProfileActionButton extends StatelessWidget {
   final IconData icon;
   final String title;
@@ -472,22 +492,26 @@ class _EditProfilePageState extends State<EditProfilePage> {
           child: Form(
             key: _formKey,
             child: SoftCard(
+              color: appCardColor(context, Colors.white),
               padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
+                  Text(
                     'Update your profile name',
                     style: TextStyle(
                       fontSize: 18,
-                      color: kInk,
+                      color: Theme.of(context).colorScheme.onSurface,
                       fontWeight: FontWeight.w900,
                     ),
                   ),
                   const SizedBox(height: 7),
-                  const Text(
+                  Text(
                     'This name is shown on your MyTransitAssist profile.',
-                    style: TextStyle(fontSize: 13, color: kMutedDark),
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                   ),
                   const SizedBox(height: 20),
                   TextFormField(
@@ -495,10 +519,11 @@ class _EditProfilePageState extends State<EditProfilePage> {
                     autofocus: true,
                     textCapitalization: TextCapitalization.words,
                     validator: _displayNameValidator,
-                    decoration: const InputDecoration(
-                      labelText: 'Display name',
-                      hintText: 'Enter your name',
-                      prefixIcon: Icon(Icons.person_outline_rounded),
+                    decoration: _profileInputDecoration(
+                      context,
+                      label: 'Display name',
+                      hint: 'Enter your name',
+                      icon: Icons.person_outline_rounded,
                     ),
                   ),
                   const SizedBox(height: 22),
@@ -577,22 +602,26 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
           child: Form(
             key: _formKey,
             child: SoftCard(
+              color: appCardColor(context, Colors.white),
               padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
+                  Text(
                     'Update your password',
                     style: TextStyle(
                       fontSize: 18,
-                      color: kInk,
+                      color: Theme.of(context).colorScheme.onSurface,
                       fontWeight: FontWeight.w900,
                     ),
                   ),
                   const SizedBox(height: 7),
-                  const Text(
+                  Text(
                     'Enter your current password, then choose a new one.',
-                    style: TextStyle(fontSize: 13, color: kMutedDark),
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                   ),
                   const SizedBox(height: 20),
                   TextFormField(
@@ -602,9 +631,11 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                     validator: (value) => value == null || value.isEmpty
                         ? 'Enter your current password'
                         : null,
-                    decoration: const InputDecoration(
-                      labelText: 'Current password',
-                      prefixIcon: Icon(Icons.lock_outline_rounded),
+                    decoration: _profileInputDecoration(
+                      context,
+                      label: 'Current password',
+                      hint: 'Enter current password',
+                      icon: Icons.lock_outline_rounded,
                     ),
                   ),
                   const SizedBox(height: 14),
@@ -612,9 +643,11 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                     controller: _passwordController,
                     obscureText: true,
                     validator: _passwordValidator,
-                    decoration: const InputDecoration(
-                      labelText: 'New password',
-                      prefixIcon: Icon(Icons.lock_outline_rounded),
+                    decoration: _profileInputDecoration(
+                      context,
+                      label: 'New password',
+                      hint: 'At least 6 characters',
+                      icon: Icons.lock_outline_rounded,
                     ),
                   ),
                   const SizedBox(height: 14),
@@ -628,9 +661,11 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                           ? null
                           : 'Passwords do not match';
                     },
-                    decoration: const InputDecoration(
-                      labelText: 'Confirm password',
-                      prefixIcon: Icon(Icons.lock_reset_rounded),
+                    decoration: _profileInputDecoration(
+                      context,
+                      label: 'Confirm password',
+                      hint: 'Re-enter new password',
+                      icon: Icons.lock_reset_rounded,
                     ),
                   ),
                   const SizedBox(height: 22),

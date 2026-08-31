@@ -242,7 +242,7 @@ class _PlanPageState extends State<PlanPage> {
         },
       );
       if (!mounted || selected == null) return false;
-      setState(() => _fromController.text = selected.name);
+      _fromController.text = selected.name;
       return true;
     } catch (error) {
       if (mounted) {
@@ -296,6 +296,16 @@ class _PlanPageState extends State<PlanPage> {
     );
   }
 
+  void _resetPlan() {
+    FocusScope.of(context).unfocus();
+    _fromController.text = 'Current location';
+    _toController.text = 'Pasar Seni';
+    setState(() => _departureTime = null);
+    context.read<AppState>().resetJourneySearch();
+    _formKey.currentState?.reset();
+    widget.onMessage('Journey search reset');
+  }
+
   String _timeOfDayLabel(TimeOfDay time) {
     final hour = time.hourOfPeriod == 0 ? 12 : time.hourOfPeriod;
     final minute = time.minute.toString().padLeft(2, '0');
@@ -317,6 +327,11 @@ class _PlanPageState extends State<PlanPage> {
         context,
       ).push(MaterialPageRoute(builder: (_) => const LoginPage()));
       return;
+    }
+
+    if (_fromController.text.trim().toLowerCase() == 'current location') {
+      final selected = await _chooseNearbyStartingStop();
+      if (!selected || !mounted) return;
     }
 
     if (state.isFavoriteRouteSaved(
@@ -457,38 +472,73 @@ class _PlanPageState extends State<PlanPage> {
               ),
             ),
             const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              height: 36,
-              child: OutlinedButton.icon(
-                onPressed: routeAlreadySaved
-                    ? () => widget.onMessage('This route is already saved')
-                    : _saveFavoriteRoute,
-                icon: Icon(
-                  routeAlreadySaved
-                      ? Icons.bookmark_rounded
-                      : Icons.bookmark_border_rounded,
-                  size: 15,
-                ),
-                label: Text(
-                  routeAlreadySaved
-                      ? 'Route already saved'
-                      : state.isGuest
-                      ? 'Sign in to save route'
-                      : 'Save as favourite route',
-                  style: const TextStyle(
-                    fontSize: 9,
-                    fontWeight: FontWeight.w900,
+            Row(
+              children: [
+                Expanded(
+                  child: SizedBox(
+                    height: 36,
+                    child: OutlinedButton.icon(
+                      onPressed: routeAlreadySaved
+                          ? () =>
+                                widget.onMessage('This route is already saved')
+                          : _saveFavoriteRoute,
+                      icon: Icon(
+                        routeAlreadySaved
+                            ? Icons.bookmark_rounded
+                            : Icons.bookmark_border_rounded,
+                        size: 15,
+                      ),
+                      label: Text(
+                        routeAlreadySaved
+                            ? 'Route already saved'
+                            : state.isGuest
+                            ? 'Sign in to save route'
+                            : 'Save as favourite route',
+                        style: const TextStyle(
+                          fontSize: 9,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: kPurple,
+                        side: const BorderSide(color: kPurple),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: kPurple,
-                  side: const BorderSide(color: kPurple),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
+                const SizedBox(width: 7),
+                SizedBox(
+                  width: 82,
+                  height: 36,
+                  child: OutlinedButton.icon(
+                    onPressed: state.isSearching ? null : _resetPlan,
+                    icon: const Icon(Icons.refresh_rounded, size: 15),
+                    label: const FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        'Reset',
+                        maxLines: 1,
+                        softWrap: false,
+                        style: TextStyle(
+                          fontSize: 9,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: kTeal,
+                      side: const BorderSide(color: kTeal),
+                      padding: EdgeInsets.zero,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
                   ),
                 ),
-              ),
+              ],
             ),
             const SizedBox(height: 8),
             GestureDetector(
