@@ -19,18 +19,21 @@ Future<void> main() async {
   await SupabaseService().initialize();
   await appState.syncCloudData();
   runApp(
-    ChangeNotifierProvider.value(value: appState, child: const SmartMoveApp()),
+    ChangeNotifierProvider.value(
+      value: appState,
+      child: const MyTransitAssistApp(),
+    ),
   );
 }
 
-class SmartMoveApp extends StatefulWidget {
-  const SmartMoveApp({super.key});
+class MyTransitAssistApp extends StatefulWidget {
+  const MyTransitAssistApp({super.key});
 
   @override
-  State<SmartMoveApp> createState() => _SmartMoveAppState();
+  State<MyTransitAssistApp> createState() => _MyTransitAssistAppState();
 }
 
-class _SmartMoveAppState extends State<SmartMoveApp>
+class _MyTransitAssistAppState extends State<MyTransitAssistApp>
     with WidgetsBindingObserver {
   final _messengerKey = GlobalKey<ScaffoldMessengerState>();
   final _navigatorKey = GlobalKey<NavigatorState>();
@@ -188,7 +191,7 @@ class _SmartMoveAppState extends State<SmartMoveApp>
           child: child ?? const SizedBox.shrink(),
         );
       },
-      home: const SmartMoveShell(),
+      home: const MyTransitAssistShell(),
     );
   }
 
@@ -253,8 +256,8 @@ class _SmartMoveAppState extends State<SmartMoveApp>
   }
 }
 
-class SmartMoveShell extends StatelessWidget {
-  const SmartMoveShell({super.key});
+class MyTransitAssistShell extends StatelessWidget {
+  const MyTransitAssistShell({super.key});
 
   void _showMessage(BuildContext context, String message) {
     ScaffoldMessenger.of(context)

@@ -369,6 +369,63 @@ class TransitDataService {
     return routes.isEmpty ? null : routes.first;
   }
 
+  /// Returns the realtime feed's internal route IDs for the bus services in
+  /// [route]. The Journey Planner and GTFS-realtime feeds do not always use
+  /// the same ID namespace, so the public service code is resolved through
+  /// the official static GTFS routes file first.
+  ///
+  /// Matching is deliberately based on the complete public service code:
+  /// `T250` and `250` remain different services.
+  Future<Set<String>> realtimeBusRouteIdsFor(TransitRouteResult route) async {
+    final busLegs = route.legs.where((leg) => leg.mode == 'Bus').toList();
+    final serviceNames = <String>{
+      for (final leg in busLegs) _routeServiceKey(leg.serviceName),
+    };
+    final plannerRouteIds = <String>{
+      for (final leg in busLegs)
+        if (leg.routeId != null && leg.routeId!.trim().isNotEmpty)
+          leg.routeId!.trim(),
+    };
+
+    if (busLegs.isEmpty && route.mode == 'Bus') {
+      final serviceKey = _routeServiceKey(route.serviceName);
+      if (serviceKey.isNotEmpty) serviceNames.add(serviceKey);
+      if (route.routeId != null && route.routeId!.trim().isNotEmpty) {
+        plannerRouteIds.add(route.routeId!.trim());
+      }
+    }
+    if (serviceNames.isEmpty && plannerRouteIds.isEmpty) return const {};
+
+    late final _GtfsFeed feed;
+    try {
+      feed = await _loadBusFeed();
+    } catch (_) {
+      return const {};
+    }
+
+    final realtimeRouteIds = <String>{};
+    final matchedServiceNames = <String>{};
+    for (final plannerRouteId in plannerRouteIds) {
+      for (final feedRouteId in feed.routes.keys) {
+        if (_routeIdKey(feedRouteId) == _routeIdKey(plannerRouteId)) {
+          realtimeRouteIds.add(feedRouteId);
+        }
+      }
+    }
+    for (final entry in feed.routes.entries) {
+      final serviceKey = _routeServiceKey(entry.value.displayName);
+      if (serviceNames.contains(serviceKey)) {
+        realtimeRouteIds.add(entry.key);
+        matchedServiceNames.add(serviceKey);
+      }
+    }
+    for (final serviceName in serviceNames) {
+      if (matchedServiceNames.contains(serviceName)) continue;
+      realtimeRouteIds.addAll(_realtimeRouteIdFallbacks(serviceName));
+    }
+    return realtimeRouteIds;
+  }
+
   Future<List<NearbyTransitStop>> findNearbyStops({
     required double latitude,
     required double longitude,
@@ -1333,6 +1390,34 @@ class TransitDataService {
     );
     final name = shortName ?? longName ?? 'Transit service';
     return name;
+  }
+
+  static String _routeIdKey(String value) {
+    return value.trim().toLowerCase();
+  }
+
+  static String _routeServiceKey(String value) {
+    return value.trim().toUpperCase().replaceAll(RegExp(r'[\s_-]+'), '');
+  }
+
+  static Set<String> _realtimeRouteIdFallbacks(String serviceName) {
+    final key = _routeServiceKey(serviceName);
+    if (key.isEmpty) return const {};
+
+    final aliases = <String>{key.toLowerCase()};
+    final alphabeticRoute = RegExp(r'^([A-Z]+)(\d+[A-Z]*)$').firstMatch(key);
+    if (alphabeticRoute != null) {
+      final prefix = alphabeticRoute.group(1)!;
+      final number = alphabeticRoute.group(2)!;
+      aliases
+        ..add('$prefix${number}0'.toLowerCase())
+        ..add('$prefix${number}8'.toLowerCase());
+    } else if (RegExp(r'^\d+$').hasMatch(key)) {
+      aliases
+        ..add('u${key}0')
+        ..add('u${key}8');
+    }
+    return aliases;
   }
 
   String _plannerMode(Map<String, dynamic> details) {

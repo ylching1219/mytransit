@@ -806,7 +806,13 @@ class AppState extends ChangeNotifier {
     _liveTransitError = null;
     notifyListeners();
     try {
-      final snapshot = await _realtimeTransitService.fetchForRoute(route);
+      final mappedRouteIds = await _transitDataService.realtimeBusRouteIdsFor(
+        route,
+      );
+      final snapshot = await _realtimeTransitService.fetchForRoute(
+        route,
+        mappedRouteIds: mappedRouteIds,
+      );
       if (_nextRoute == route) {
         _liveTransitUpdatedAt = snapshot.fetchedAt;
         _liveTransitError = snapshot.errorMessage;
@@ -991,9 +997,6 @@ class AppState extends ChangeNotifier {
       return;
     }
 
-    final routeId = (boardingLeg.routeId ?? route.routeId)
-        ?.trim()
-        .toLowerCase();
     final candidates = <RealtimeTransitVehicle>[];
     final previousDistances = <String, double?>{};
     final candidateDistances = <String, double>{};
@@ -1001,14 +1004,9 @@ class AppState extends ChangeNotifier {
 
     for (final vehicle in vehicles) {
       if (vehicle.mode != 'Bus') continue;
-      final vehicleRouteId = vehicle.routeId?.trim().toLowerCase();
-      if (routeId != null &&
-          routeId.isNotEmpty &&
-          vehicleRouteId != null &&
-          vehicleRouteId.isNotEmpty &&
-          vehicleRouteId != routeId) {
-        continue;
-      }
+      // RealtimeTransitService has already filtered vehicles using the
+      // official static GTFS route mapping. Do not compare the planner's raw
+      // routeId here because the two feeds can use different ID namespaces.
 
       final vehicleToBoarding = _distanceMeters(
         vehicle.latitude,
