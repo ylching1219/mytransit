@@ -31,6 +31,9 @@ class _RouteResultsPageState extends State<RouteResultsPage> {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final routes = state.routeOptions;
+    final currentMalaysiaTime = TimeOfDay.fromDateTime(
+      malaysiaNow(),
+    ).format(context);
     final sortedRoutes = [...routes]..sort(_compareRoutes);
     const modes = ['Bus', 'LRT', 'MRT', 'Mixed'];
     TransitRouteResult? recommendedRoute;
@@ -130,7 +133,7 @@ class _RouteResultsPageState extends State<RouteResultsPage> {
                           const SizedBox(height: 3),
                           Text(
                             widget.departureTimeLabel == null
-                                ? 'All scheduled departures · Official MyRapid planner'
+                                ? 'Departures after $currentMalaysiaTime (MYT) · All schedules'
                                 : 'Departures within 30 minutes of ${widget.departureTimeLabel} · Official MyRapid planner',
                             style: const TextStyle(
                               fontSize: 8.5,

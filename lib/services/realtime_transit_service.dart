@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:archive/archive.dart';
 import 'package:gtfs_realtime_bindings/gtfs_realtime_bindings.dart';
@@ -59,6 +60,7 @@ class RealtimeTransitService {
   Future<RealtimeTransitSnapshot> fetchForRoute(
     TransitRouteResult route, {
     Set<String>? mappedRouteIds,
+    Map<String, TransitStationPoint>? busStopLookup,
   }) async {
     final transitLegs = route.legs.where((leg) => !leg.isWalking).toList();
     final modes = <String>{
@@ -67,19 +69,26 @@ class RealtimeTransitService {
     };
     final busLegs = transitLegs.where((leg) => leg.mode == 'Bus').toList();
     final routeIds = <String>{};
+    final routeAliases = <String>{};
     if (mappedRouteIds != null && mappedRouteIds.isNotEmpty) {
-      routeIds.addAll(mappedRouteIds.map(_normalise));
+      routeIds.addAll(mappedRouteIds.map(_normaliseRouteId));
     } else {
       if (route.mode == 'Bus' &&
           route.routeId != null &&
           route.routeId!.trim().isNotEmpty) {
-        routeIds.add(_normalise(route.routeId!));
+        routeIds.add(_normaliseRouteId(route.routeId!));
       }
       for (final leg in busLegs) {
         if (leg.routeId != null && leg.routeId!.trim().isNotEmpty) {
-          routeIds.add(_normalise(leg.routeId!));
+          routeIds.add(_normaliseRouteId(leg.routeId!));
         }
       }
+    }
+    for (final leg in busLegs) {
+      routeAliases.addAll(_routeAliasesForService(leg.serviceName));
+    }
+    if (route.mode == 'Bus') {
+      routeAliases.addAll(_routeAliasesForService(route.serviceName));
     }
     final routeStations = _stationsForRoute(route);
 
@@ -92,7 +101,7 @@ class RealtimeTransitService {
     if (!wantsBus) {
       return RealtimeTransitSnapshot(
         vehicles: const [],
-        fetchedAt: DateTime.now(),
+        fetchedAt: _utcNow(),
         errorMessage: wantsRail
             ? 'Live rail positions are not currently published by the official feed.'
             : 'No live transit feed is available for this route.',
@@ -100,13 +109,32 @@ class RealtimeTransitService {
     }
 
     final results = <_RealtimeFeedResult>[];
-    final kioskResult = await _fetchKioskFeed(routeStations, routeIds);
-    if (kioskResult.error == null) {
+    var kioskResult = await _fetchKioskFeed(
+      routeStations,
+      routeIds,
+      busStopLookup,
+    );
+    if (kioskResult.vehicles.isEmpty && routeIds.isNotEmpty) {
+      // The kiosk accepts internal route IDs, but those IDs can change while
+      // a planner route is still valid. Retry once without a route filter and
+      // apply the public-code aliases below to the returned vehicles.
+      final broadResult = await _fetchKioskFeed(
+        routeStations,
+        const {},
+        busStopLookup,
+      );
+      if (broadResult.vehicles.isNotEmpty) kioskResult = broadResult;
+    }
+    if (kioskResult.error == null && kioskResult.vehicles.isNotEmpty) {
       results.add(kioskResult);
     } else {
       // Keep the government GTFS-realtime endpoint as a fallback if the
       // Prasarana kiosk socket is temporarily unavailable.
-      final fallbackResult = await _fetchFeed(_busEndpoint, routeStations);
+      final fallbackResult = await _fetchFeed(
+        _busEndpoint,
+        routeStations,
+        busStopLookup,
+      );
       results.add(
         fallbackResult.error == null || fallbackResult.vehicles.isNotEmpty
             ? fallbackResult
@@ -123,7 +151,11 @@ class RealtimeTransitService {
       for (final vehicle in result.vehicles) {
         if (routeIds.isNotEmpty &&
             (vehicle.routeId == null ||
-                !routeIds.contains(_normalise(vehicle.routeId!)))) {
+                (!_containsRouteId(
+                  routeIds,
+                  routeAliases,
+                  vehicle.routeId!,
+                )))) {
           continue;
         }
         if (seenIds.add(vehicle.id)) vehicles.add(vehicle);
@@ -137,7 +169,7 @@ class RealtimeTransitService {
             : null);
     return RealtimeTransitSnapshot(
       vehicles: vehicles,
-      fetchedAt: DateTime.now(),
+      fetchedAt: _utcNow(),
       errorMessage: feedWarning,
     );
   }
@@ -145,6 +177,7 @@ class RealtimeTransitService {
   Future<_RealtimeFeedResult> _fetchKioskFeed(
     List<TransitStationPoint> routeStations,
     Set<String> routeIds,
+    Map<String, TransitStationPoint>? busStopLookup,
   ) async {
     final requestedRouteIds = routeIds.isEmpty
         ? <String?>[null]
@@ -154,7 +187,11 @@ class RealtimeTransitService {
     String? firstError;
 
     for (final routeId in requestedRouteIds) {
-      final result = await _fetchKioskRoute(routeStations, routeId);
+      final result = await _fetchKioskRoute(
+        routeStations,
+        routeId,
+        busStopLookup,
+      );
       firstError ??= result.error;
       for (final vehicle in result.vehicles) {
         if (seenIds.add(_normaliseVehicleId(vehicle))) {
@@ -172,6 +209,7 @@ class RealtimeTransitService {
   Future<_RealtimeFeedResult> _fetchKioskRoute(
     List<TransitStationPoint> routeStations,
     String? routeId,
+    Map<String, TransitStationPoint>? busStopLookup,
   ) async {
     WebSocketChannel? channel;
     StreamSubscription<dynamic>? subscription;
@@ -198,7 +236,7 @@ class RealtimeTransitService {
           if (frame.startsWith('40') && !reloadSent) {
             reloadSent = true;
             final payload = jsonEncode(<String, Object?>{
-              'sid': 'mytransitassist-${DateTime.now().microsecondsSinceEpoch}',
+              'sid': 'mytransitassist-${_utcNow().microsecondsSinceEpoch}',
               'uid': '',
               'provider': 'RKL',
               'route': routeId?.toUpperCase() ?? '',
@@ -220,7 +258,9 @@ class RealtimeTransitService {
               return;
             }
             if (!result.isCompleted) {
-              result.complete(_parseKioskVehicles(event[1], routeStations));
+              result.complete(
+                _parseKioskVehicles(event[1], routeStations, busStopLookup),
+              );
             }
           } catch (error, stackTrace) {
             completeError(error, stackTrace);
@@ -253,6 +293,7 @@ class RealtimeTransitService {
   List<RealtimeTransitVehicle> _parseKioskVehicles(
     dynamic encodedPayload,
     List<TransitStationPoint> routeStations,
+    Map<String, TransitStationPoint>? busStopLookup,
   ) {
     if (encodedPayload is! String || encodedPayload.trim().isEmpty) {
       return const [];
@@ -292,11 +333,22 @@ class RealtimeTransitService {
         record['bus_no'] ?? record['vehicle_id'] ?? record['id'],
       );
       final feedStopId = _textValue(record['busstop_id'] ?? record['stop_id']);
-      final exactStop = _findStopById(routeStations, feedStopId);
+      final feedStopName = _feedStopName(record);
+      final catalogueStop = _lookupStop(busStopLookup, feedStopId);
+      final exactStop =
+          catalogueStop ?? _findStopById(routeStations, feedStopId);
       final nearestStop = exactStop == null
-          ? _nearestStop(routeStations, latitude, longitude)
+          ? _nearestStop(
+              routeStations,
+              latitude,
+              longitude,
+              additionalStations: busStopLookup?.values,
+            )
           : null;
       final currentStop = exactStop ?? nearestStop;
+      final currentStopName =
+          exactStop?.name ??
+          (feedStopName.isEmpty ? currentStop?.name : feedStopName);
       final id = busId.isNotEmpty
           ? busId
           : '${routeId}_${latitude.toStringAsFixed(5)}_${longitude.toStringAsFixed(5)}';
@@ -305,10 +357,10 @@ class RealtimeTransitService {
           id: id,
           mode: 'Bus',
           routeId: routeId.isEmpty ? null : routeId,
-          currentStopId:
-              currentStop?.id ?? (feedStopId.isEmpty ? null : feedStopId),
-          currentStopName: currentStop?.name,
-          currentStopEstimated: exactStop == null && currentStop != null,
+          currentStopId: feedStopId.isNotEmpty ? feedStopId : currentStop?.id,
+          currentStopName: currentStopName,
+          currentStopEstimated:
+              exactStop == null && currentStop != null && feedStopName.isEmpty,
           label: busId.isNotEmpty
               ? busId
               : (routeId.isEmpty ? 'Live bus' : routeId),
@@ -323,6 +375,7 @@ class RealtimeTransitService {
   Future<_RealtimeFeedResult> _fetchFeed(
     Uri endpoint,
     List<TransitStationPoint> routeStations,
+    Map<String, TransitStationPoint>? busStopLookup,
   ) async {
     const mode = 'Bus';
     try {
@@ -354,9 +407,16 @@ class RealtimeTransitService {
         final feedStopId = vehiclePosition.hasStopId()
             ? vehiclePosition.stopId
             : null;
-        final exactStop = _findStopById(routeStations, feedStopId);
+        final catalogueStop = _lookupStop(busStopLookup, feedStopId);
+        final exactStop =
+            catalogueStop ?? _findStopById(routeStations, feedStopId);
         final nearestStop = exactStop == null
-            ? _nearestStop(routeStations, position.latitude, position.longitude)
+            ? _nearestStop(
+                routeStations,
+                position.latitude,
+                position.longitude,
+                additionalStations: busStopLookup?.values,
+              )
             : null;
         final currentStop = exactStop ?? nearestStop;
         final vehicleId =
@@ -372,7 +432,7 @@ class RealtimeTransitService {
             id: vehicleId.isEmpty ? entity.id : vehicleId,
             mode: mode,
             routeId: routeId,
-            currentStopId: currentStop?.id ?? feedStopId,
+            currentStopId: feedStopId ?? currentStop?.id,
             currentStopName: currentStop?.name,
             currentStopEstimated: exactStop == null && currentStop != null,
             label: label,
@@ -395,12 +455,66 @@ class RealtimeTransitService {
 
   static String _normalise(String value) => value.trim().toLowerCase();
 
+  static String _normaliseRouteId(String value) {
+    return value.trim().toLowerCase().replaceAll(RegExp(r'[\s_-]+'), '');
+  }
+
+  static bool _containsRouteId(
+    Set<String> routeIds,
+    Set<String> routeAliases,
+    String routeId,
+  ) {
+    final normalised = _normaliseRouteId(routeId);
+    return routeIds.contains(normalised) || routeAliases.contains(normalised);
+  }
+
+  static Set<String> _routeAliasesForService(String serviceName) {
+    final key = _normaliseRouteId(serviceName);
+    if (key.isEmpty) return const {};
+
+    final aliases = <String>{key};
+    final alphabeticRoute = RegExp(r'^([a-z]+)(\d+[a-z]*)$').firstMatch(key);
+    if (alphabeticRoute != null) {
+      final prefix = alphabeticRoute.group(1)!;
+      final number = alphabeticRoute.group(2)!;
+      aliases
+        ..add('$prefix${number}0')
+        ..add('$prefix${number}8');
+      // Some planner responses already expose the kiosk's trailing-zero
+      // internal ID instead of the public service code.
+      if (key.endsWith('0') && number.length > 3) {
+        aliases.add(key.substring(0, key.length - 1));
+      }
+    } else if (RegExp(r'^\d+$').hasMatch(key)) {
+      aliases
+        ..add('u${key}0')
+        ..add('u${key}8');
+      if (key.endsWith('0') && key.length > 3) {
+        aliases.add(key.substring(0, key.length - 1));
+      }
+    }
+    return aliases;
+  }
+
   static String _normaliseVehicleId(RealtimeTransitVehicle vehicle) {
     final id = vehicle.id.trim();
     return (id.isEmpty ? vehicle.label : id).trim().toLowerCase();
   }
 
   static String _textValue(dynamic value) => value?.toString().trim() ?? '';
+
+  static String _feedStopName(Map<String, dynamic> record) {
+    for (final key in const [
+      'busstop_name',
+      'stop_name',
+      'current_stop_name',
+      'current_stop',
+    ]) {
+      final value = record[key];
+      if (value is String && value.trim().isNotEmpty) return value.trim();
+    }
+    return '';
+  }
 
   static double? _doubleValue(dynamic value) {
     if (value is num) return value.toDouble();
@@ -455,26 +569,66 @@ class RealtimeTransitService {
     return null;
   }
 
+  static TransitStationPoint? _lookupStop(
+    Map<String, TransitStationPoint>? lookup,
+    String? stopId,
+  ) {
+    if (lookup == null || stopId == null || stopId.trim().isEmpty) return null;
+    final normalisedId = _normaliseStopId(stopId);
+    return lookup[normalisedId];
+  }
+
+  static String _normaliseStopId(String value) {
+    return value.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+  }
+
   static TransitStationPoint? _nearestStop(
     List<TransitStationPoint> stations,
     double latitude,
-    double longitude,
-  ) {
+    double longitude, {
+    Iterable<TransitStationPoint>? additionalStations,
+  }) {
     TransitStationPoint? nearest;
     var nearestDistance = double.infinity;
-    for (final station in stations) {
-      final latitudeDistance = latitude - station.latitude;
-      final longitudeDistance = longitude - station.longitude;
-      final distance =
-          latitudeDistance * latitudeDistance +
-          longitudeDistance * longitudeDistance;
+    for (final station in [...stations, ...?additionalStations]) {
+      final distance = _distanceMeters(
+        latitude,
+        longitude,
+        station.latitude,
+        station.longitude,
+      );
       if (distance < nearestDistance) {
         nearestDistance = distance;
         nearest = station;
       }
     }
-    return nearest;
+    // A route can contain only a subset of stops, and planner/feed IDs are
+    // not always from the same namespace. Never display a distant planner
+    // stop as if the vehicle were there.
+    return nearestDistance <= 250 ? nearest : null;
   }
+
+  static double _distanceMeters(
+    double latitudeA,
+    double longitudeA,
+    double latitudeB,
+    double longitudeB,
+  ) {
+    const earthRadiusMeters = 6371000.0;
+    final latitudeDifference = _radians(latitudeB - latitudeA);
+    final longitudeDifference = _radians(longitudeB - longitudeA);
+    final a =
+        math.sin(latitudeDifference / 2) * math.sin(latitudeDifference / 2) +
+        math.cos(_radians(latitudeA)) *
+            math.cos(_radians(latitudeB)) *
+            math.sin(longitudeDifference / 2) *
+            math.sin(longitudeDifference / 2);
+    return earthRadiusMeters * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+  }
+
+  static double _radians(double degrees) => degrees * math.pi / 180;
+
+  static DateTime _utcNow() => DateTime.now().toUtc();
 }
 
 class _RealtimeFeedResult {

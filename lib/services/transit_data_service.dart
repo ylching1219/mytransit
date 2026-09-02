@@ -220,25 +220,57 @@ class TransitDataService {
     int? departureAfterSeconds,
     int? departureBeforeSeconds,
   }) async {
+    // A null departure time means "Any time".  It must still have a lower
+    // bound, otherwise the static GTFS feed can return departures from the
+    // beginning of the timetable, including services that already left.
+    final effectiveDepartureAfterSeconds =
+        departureAfterSeconds ?? _currentMalaysiaSeconds();
+
+    final plannerRoutes = <TransitRouteResult>[];
     try {
-      final plannerRoutes = await _findRoutesWithJourneyPlanner(
-        from: from,
-        to: to,
-        departureAfterSeconds: departureAfterSeconds,
-        departureBeforeSeconds: departureBeforeSeconds,
+      plannerRoutes.addAll(
+        await _findRoutesWithJourneyPlanner(
+          from: from,
+          to: to,
+          departureAfterSeconds: effectiveDepartureAfterSeconds,
+          departureBeforeSeconds: departureBeforeSeconds,
+        ),
       );
-      if (plannerRoutes.isNotEmpty) return plannerRoutes;
     } catch (_) {
-      // Keep the local GTFS search as a fallback when the official planner is
+      // Keep the static GTFS search as a fallback when the official planner is
       // unavailable or does not recognise one of the entered places.
     }
 
-    return _findRoutesFromStaticFeeds(
-      from: from,
-      to: to,
-      departureAfterSeconds: departureAfterSeconds,
-      departureBeforeSeconds: departureBeforeSeconds,
-    );
+    List<TransitRouteResult> staticRoutes;
+    try {
+      staticRoutes = await _findRoutesFromStaticFeeds(
+        from: from,
+        to: to,
+        departureAfterSeconds: effectiveDepartureAfterSeconds,
+        departureBeforeSeconds: departureBeforeSeconds,
+      );
+    } catch (_) {
+      // If the planner succeeded, its results are still useful even when the
+      // static schedule feed is temporarily unavailable.
+      if (plannerRoutes.isNotEmpty) return plannerRoutes;
+      rethrow;
+    }
+
+    // The Journey Planner gives the best place-to-place alternatives, while
+    // static GTFS contains every scheduled trip.  Keep both so Any time can
+    // show all departures after the current Malaysia time.
+    final unique = <String, TransitRouteResult>{};
+    for (final route in [...plannerRoutes, ...staticRoutes]) {
+      final key = [
+        route.serviceName,
+        route.fromStopName,
+        route.toStopName,
+        route.departureTime,
+        route.arrivalTime,
+      ].join('|');
+      unique.putIfAbsent(key, () => route);
+    }
+    return unique.values.toList()..sort(_compareJourneyResults);
   }
 
   Future<List<TransitRouteResult>> _findRoutesFromStaticFeeds({
@@ -424,6 +456,65 @@ class TransitDataService {
       realtimeRouteIds.addAll(_realtimeRouteIdFallbacks(serviceName));
     }
     return realtimeRouteIds;
+  }
+
+  /// Returns the official Rapid Bus stop catalogue used by the realtime feed.
+  /// The journey planner and the vehicle feed can use different stop-ID
+  /// namespaces, so live stop names must be resolved from this catalogue
+  /// before falling back to a route station or GPS estimate.
+  Future<Map<String, TransitStationPoint>> realtimeBusStopLookup() async {
+    late final _GtfsFeed feed;
+    try {
+      feed = await _loadBusFeed();
+    } catch (_) {
+      return const {};
+    }
+    return _stopLookup(feed, feed.stops.keys);
+  }
+
+  /// Returns only stops used by the selected Rapid Bus route IDs. This is a
+  /// better GPS fallback than comparing a vehicle with every bus stop in the
+  /// city, while still falling back to the complete catalogue when a route
+  /// cannot be resolved.
+  Future<Map<String, TransitStationPoint>> realtimeBusStopLookupForRoutes(
+    Set<String> routeIds,
+  ) async {
+    late final _GtfsFeed feed;
+    try {
+      feed = await _loadBusFeed();
+    } catch (_) {
+      return const {};
+    }
+    if (routeIds.isEmpty) return _stopLookup(feed, feed.stops.keys);
+
+    final normalisedRouteIds = routeIds.map(_normaliseStopId).toSet();
+    final routeStopIds = <String>{};
+    for (final entry in feed.tripRoutes.entries) {
+      if (!normalisedRouteIds.contains(_normaliseStopId(entry.value))) {
+        continue;
+      }
+      for (final stopTime in feed.tripStops[entry.key] ?? const []) {
+        routeStopIds.add(stopTime.stopId);
+      }
+    }
+    if (routeStopIds.isEmpty) return _stopLookup(feed, feed.stops.keys);
+    return _stopLookup(feed, routeStopIds);
+  }
+
+  Map<String, TransitStationPoint> _stopLookup(
+    _GtfsFeed feed,
+    Iterable<String> stopIds,
+  ) {
+    return {
+      for (final stopId in stopIds)
+        if (feed.stops[stopId] case final stop?)
+          _normaliseStopId(stop.id): TransitStationPoint(
+            id: stop.id,
+            name: stop.name,
+            latitude: stop.latitude,
+            longitude: stop.longitude,
+          ),
+    };
   }
 
   Future<List<NearbyTransitStop>> findNearbyStops({
@@ -1245,8 +1336,8 @@ class TransitDataService {
         break;
       }
     }
-    // The planner's top-level departure can be the requested search time
-    // (00:00 for Any time), rather than the actual first service departure.
+    // The planner's top-level departure can be the requested search time,
+    // rather than the actual first service departure.
     // Use the first transit leg so schedule results show the real departure.
     final routeDeparture = firstTransit.departureTime;
     final routeArrival =
@@ -1476,7 +1567,14 @@ class TransitDataService {
   static DateTime _plannerDepartureDateTime(int? departureAfterSeconds) {
     final now = DateTime.now().toUtc().add(const Duration(hours: 8));
     final startOfDay = DateTime(now.year, now.month, now.day);
-    return startOfDay.add(Duration(seconds: departureAfterSeconds ?? 0));
+    return startOfDay.add(
+      Duration(seconds: departureAfterSeconds ?? _currentMalaysiaSeconds()),
+    );
+  }
+
+  static int _currentMalaysiaSeconds() {
+    final now = DateTime.now().toUtc().add(const Duration(hours: 8));
+    return now.hour * 3600 + now.minute * 60 + now.second;
   }
 
   static String _formatPlannerDateTime(DateTime value) {
@@ -2156,6 +2254,10 @@ class TransitDataService {
       RegExp(r'[^a-z0-9]'),
       '',
     );
+  }
+
+  static String _normaliseStopId(String value) {
+    return value.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
   }
 
   static int _minutesBetween(String departure, String arrival) {

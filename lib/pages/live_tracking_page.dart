@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
@@ -17,7 +19,8 @@ class LiveTrackingPage extends StatefulWidget {
   State<LiveTrackingPage> createState() => _LiveTrackingPageState();
 }
 
-class _LiveTrackingPageState extends State<LiveTrackingPage> {
+class _LiveTrackingPageState extends State<LiveTrackingPage>
+    with WidgetsBindingObserver {
   Future<void> _markJourneyDone() async {
     final saved = await context.read<AppState>().markNextJourneyDone();
     if (!mounted || !saved) return;
@@ -27,9 +30,24 @@ class _LiveTrackingPageState extends State<LiveTrackingPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) context.read<AppState>().startJourneyMonitoring();
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed || !mounted) return;
+    // Android may pause timers while the app is backgrounded. Refresh as soon
+    // as the live page becomes visible again and restart monitoring if needed.
+    unawaited(context.read<AppState>().startJourneyMonitoring());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
   }
 
   @override
@@ -179,6 +197,7 @@ class _LiveTrackingPageState extends State<LiveTrackingPage> {
               const SizedBox(height: 10),
               _TransitLiveFeedCard(
                 vehicles: state.liveTransitVehicles,
+                assignedBus: state.assignedBus,
                 updatedAt: state.liveTransitUpdatedAt,
                 loading: state.liveTransitLoading,
                 errorMessage: state.liveTransitError,
@@ -812,6 +831,7 @@ class _BusAssignmentCard extends StatelessWidget {
 
 class _TransitLiveFeedCard extends StatelessWidget {
   final List<RealtimeTransitVehicle> vehicles;
+  final RealtimeTransitVehicle? assignedBus;
   final DateTime? updatedAt;
   final bool loading;
   final String? errorMessage;
@@ -820,6 +840,7 @@ class _TransitLiveFeedCard extends StatelessWidget {
 
   const _TransitLiveFeedCard({
     required this.vehicles,
+    required this.assignedBus,
     required this.updatedAt,
     required this.loading,
     required this.errorMessage,
@@ -838,14 +859,18 @@ class _TransitLiveFeedCard extends StatelessWidget {
     final railOnlyUnavailable = railNotPublished && vehicles.isEmpty;
     final isUnavailable =
         railOnlyUnavailable || (errorMessage != null && updatedAt == null);
-    final title = railOnlyUnavailable
+    final title = assignedBus != null
+        ? 'Assigned bus ${_vehicleLabel(assignedBus!)}'
+        : railOnlyUnavailable
         ? 'Live rail positions not available'
         : isUnavailable
         ? 'Live transit feed unavailable'
         : vehicles.isEmpty
         ? 'No live vehicle reported nearby'
         : '${vehicles.length} live ${vehicles.length == 1 ? 'vehicle' : 'vehicles'} on this route';
-    final subtitle = railOnlyUnavailable
+    final subtitle = assignedBus != null
+        ? 'Only the bus assigned to your journey is shown.'
+        : railOnlyUnavailable
         ? 'The official feed does not publish live LRT/MRT positions yet. Timetable and GPS station tracking remain available.'
         : railNotPublished && vehicles.isNotEmpty
         ? 'Rail positions are not published yet. Live bus details are shown below.'
@@ -897,7 +922,7 @@ class _TransitLiveFeedCard extends StatelessWidget {
                     if (updatedAt != null) ...[
                       const SizedBox(height: 3),
                       Text(
-                        'Feed updated ${_liveTimeLabel(updatedAt!)}',
+                        'Feed checked ${_liveTimeLabel(updatedAt!)} MYT',
                         style: TextStyle(
                           fontSize: 8,
                           color: theme.colorScheme.onSurfaceVariant,
@@ -944,6 +969,11 @@ class _TransitLiveFeedCard extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  String _vehicleLabel(RealtimeTransitVehicle vehicle) {
+    final id = vehicle.id.trim();
+    return id.isEmpty ? vehicle.label : id;
   }
 }
 
@@ -1210,8 +1240,11 @@ Color _modeColor(String mode) {
 }
 
 String _liveTimeLabel(DateTime time) {
-  final hour = time.hour % 12 == 0 ? 12 : time.hour % 12;
-  final minute = time.minute.toString().padLeft(2, '0');
-  final period = time.hour >= 12 ? 'PM' : 'AM';
+  // Realtime timestamps are stored as UTC so a phone configured for another
+  // timezone cannot make the feed appear several hours old or in the future.
+  final malaysiaTime = time.toUtc().add(const Duration(hours: 8));
+  final hour = malaysiaTime.hour % 12 == 0 ? 12 : malaysiaTime.hour % 12;
+  final minute = malaysiaTime.minute.toString().padLeft(2, '0');
+  final period = malaysiaTime.hour >= 12 ? 'PM' : 'AM';
   return '$hour:$minute $period';
 }

@@ -66,7 +66,7 @@ class AppState extends ChangeNotifier {
   List<RealtimeTransitVehicle> _liveTransitVehicles = const [];
   RealtimeTransitVehicle? _assignedBus;
   String? _busDetectionStatus;
-  DateTime? _lastBusAssignmentEvaluation;
+  bool _boardingStopValidated = false;
   LocationSnapshot? _latestJourneyLocation;
   final Map<String, _BusMatchState> _busMatchStates = {};
   List<TransitRouteResult> _routeOptions = const [];
@@ -809,9 +809,12 @@ class AppState extends ChangeNotifier {
       final mappedRouteIds = await _transitDataService.realtimeBusRouteIdsFor(
         route,
       );
+      final busStopLookup = await _transitDataService
+          .realtimeBusStopLookupForRoutes(mappedRouteIds);
       final snapshot = await _realtimeTransitService.fetchForRoute(
         route,
         mappedRouteIds: mappedRouteIds,
+        busStopLookup: busStopLookup,
       );
       if (_nextRoute == route) {
         _liveTransitUpdatedAt = snapshot.fetchedAt;
@@ -845,6 +848,10 @@ class AppState extends ChangeNotifier {
       }
     } catch (_) {
       if (_nextRoute == route) {
+        // Keep the status card honest even when the request itself fails:
+        // this is the last time the app checked the live feed, not an old
+        // timestamp left over from a previous journey.
+        _liveTransitUpdatedAt = DateTime.now().toUtc();
         _liveTransitError = 'Live transit data is temporarily unavailable.';
       }
     } finally {
@@ -866,6 +873,7 @@ class AppState extends ChangeNotifier {
     final route = _nextRoute;
     if (route != null) {
       _updateAutomaticBusAssignment(route, _liveTransitVehicles);
+      _keepOnlyAssignedBus();
     }
     notifyListeners();
   }
@@ -932,12 +940,20 @@ class AppState extends ChangeNotifier {
   void _resetBusAssignment() {
     _assignedBus = null;
     _busDetectionStatus = null;
-    _lastBusAssignmentEvaluation = null;
+    _boardingStopValidated = false;
     _latestJourneyLocation = null;
     _busMatchStates.clear();
     _liveTransitVehicles = const [];
     _liveTransitUpdatedAt = null;
     _liveTransitError = null;
+  }
+
+  void _keepOnlyAssignedBus() {
+    final assignedBus = _assignedBus;
+    if (assignedBus == null) return;
+    _liveTransitVehicles = _liveTransitVehicles
+        .where((vehicle) => _sameVehicleId(vehicle.id, assignedBus.id))
+        .toList(growable: false);
   }
 
   void _updateAutomaticBusAssignment(
@@ -949,7 +965,9 @@ class AppState extends ChangeNotifier {
 
     final location = _latestJourneyLocation;
     if (location?.latitude == null || location?.longitude == null) {
-      _busDetectionStatus = 'Allow location access to identify your bus.';
+      _busDetectionStatus = vehicles.isEmpty
+          ? 'Waiting for live bus GPS data.'
+          : '${vehicles.length} route bus${vehicles.length == 1 ? '' : 'es'} found. Allow location to match your bus.';
       return;
     }
 
@@ -973,13 +991,6 @@ class AppState extends ChangeNotifier {
       return;
     }
 
-    final feedUpdatedAt = _liveTransitUpdatedAt;
-    if (feedUpdatedAt == null ||
-        _lastBusAssignmentEvaluation == feedUpdatedAt) {
-      return;
-    }
-    _lastBusAssignmentEvaluation = feedUpdatedAt;
-
     final userLatitude = location!.latitude!;
     final userLongitude = location.longitude!;
     final boardingLatitude = boardingLeg.fromLatitude;
@@ -990,7 +1001,15 @@ class AppState extends ChangeNotifier {
       boardingLatitude,
       boardingLongitude,
     );
-    if (userToBoarding > 250) {
+    const maxUserToBoardingMeters = 150.0;
+    const maxVehicleToBoardingMeters = 500.0;
+    const maxUserToVehicleMeters = 100.0;
+    // Validate the boarding stop only once. The user is expected to leave the
+    // stop after boarding, so this must not remain a permanent requirement.
+    if (userToBoarding <= maxUserToBoardingMeters) {
+      _boardingStopValidated = true;
+    }
+    if (!_boardingStopValidated) {
       _busDetectionStatus =
           'Move closer to ${boardingLeg.fromStopName} to identify your bus.';
       _busMatchStates.clear();
@@ -1000,7 +1019,6 @@ class AppState extends ChangeNotifier {
     final candidates = <RealtimeTransitVehicle>[];
     final previousDistances = <String, double?>{};
     final candidateDistances = <String, double>{};
-    final boardingStopId = boardingLeg.fromStopId.trim().toLowerCase();
 
     for (final vehicle in vehicles) {
       if (vehicle.mode != 'Bus') continue;
@@ -1014,10 +1032,19 @@ class AppState extends ChangeNotifier {
         boardingLatitude,
         boardingLongitude,
       );
-      final vehicleStopId = vehicle.currentStopId?.trim().toLowerCase();
-      final atBoardingStop =
-          boardingStopId.isNotEmpty && vehicleStopId == boardingStopId;
-      if (vehicleToBoarding > 650 && !atBoardingStop) continue;
+      final userToVehicle = _distanceMeters(
+        userLatitude,
+        userLongitude,
+        vehicle.latitude,
+        vehicle.longitude,
+      );
+      // Before the bus leaves, use the boarding-stop radius. Once the user
+      // has been validated at that stop, a bus may be farther along the route;
+      // the phone-to-bus radius becomes the useful safety check.
+      if (vehicleToBoarding > maxVehicleToBoardingMeters &&
+          userToVehicle > maxUserToVehicleMeters) {
+        continue;
+      }
 
       final key = _normaliseVehicleId(vehicle);
       final matchState = _busMatchStates.putIfAbsent(key, _BusMatchState.new);
@@ -1056,9 +1083,9 @@ class AppState extends ChangeNotifier {
       final vehicleToBoarding = candidateDistances[key]!;
       final previousDistance = previousDistances[key];
       final busHasMoved =
-          vehicleToBoarding > 160 &&
+          vehicleToBoarding > 120 &&
           (previousDistance == null ||
-              vehicleToBoarding > previousDistance + 25);
+              vehicleToBoarding > previousDistance + 15);
       aBusIsMoving = aBusIsMoving || busHasMoved;
       final userToVehicle = _distanceMeters(
         userLatitude,
@@ -1066,9 +1093,9 @@ class AppState extends ChangeNotifier {
         vehicle.latitude,
         vehicle.longitude,
       );
-      if (busHasMoved && userToVehicle <= 180) {
+      if (busHasMoved && userToVehicle <= maxUserToVehicleMeters) {
         matchState.consecutiveMatches++;
-        if (matchState.consecutiveMatches >= 2 &&
+        if (matchState.consecutiveMatches >= 1 &&
             userToVehicle < bestDistanceToUser) {
           bestMatch = vehicle;
           bestDistanceToUser = userToVehicle;
