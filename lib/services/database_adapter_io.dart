@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
@@ -14,28 +12,11 @@ class SqliteDatabaseAdapter implements DatabaseAdapter {
   String _userScope = 'guest';
 
   static const _databaseFileName = 'MyTransitAssist.db';
-  static const _legacyDatabaseFileName = 'smartmove.db';
 
   @override
   Future<void> init() async {
     final directory = await getApplicationDocumentsDirectory();
     final databasePath = path.join(directory.path, _databaseFileName);
-    final legacyDatabasePath = path.join(
-      directory.path,
-      _legacyDatabaseFileName,
-    );
-    final newDatabase = File(databasePath);
-    final legacyDatabase = File(legacyDatabasePath);
-
-    // Migrate old installations, then remove the obsolete database file.
-    if (await legacyDatabase.exists()) {
-      if (!await newDatabase.exists()) {
-        await legacyDatabase.copy(databasePath);
-      }
-      if (await newDatabase.exists()) {
-        await legacyDatabase.delete();
-      }
-    }
 
     _database = await openDatabase(
       databasePath,

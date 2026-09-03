@@ -1,5 +1,4 @@
-import 'location_service_io.dart'
-    if (dart.library.html) 'location_service_web.dart';
+import 'location_service_io.dart';
 
 class LocationSnapshot {
   final double? latitude;
