@@ -28,6 +28,7 @@ class _BusMatchState {
 
 class AppState extends ChangeNotifier {
   static const _nextJourneyStorageKey = 'next_journey';
+  static const _journeyArrivedAtStorageKey = 'next_journey_arrived_at';
 
   final DatabaseAdapter _database = createDatabaseAdapter();
   final SupabaseService _supabaseService = SupabaseService();
@@ -59,6 +60,8 @@ class AppState extends ChangeNotifier {
   int _lastReachedStationIndex = -1;
   bool _journeyLocationRequestInFlight = false;
   Timer? _journeyPollingTimer;
+  Timer? _journeyAutoCompleteTimer;
+  bool _journeyCompletionInProgress = false;
   Timer? _realtimeTransitTimer;
   bool _liveTransitLoading = false;
   DateTime? _liveTransitUpdatedAt;
@@ -124,10 +127,14 @@ class AppState extends ChangeNotifier {
       final restoredRoute = _routeFromJson(savedNextJourney);
       if (restoredRoute == null) {
         await _preferences!.remove(_nextJourneyStorageKey);
+        await _removePersistedJourneyArrival();
       } else {
         _nextRoute = restoredRoute;
         _resumeNextJourneyPrompt = true;
+        _restoreArrivedJourney(restoredRoute);
       }
+    } else {
+      await _removePersistedJourneyArrival();
     }
     _isGuest = !(_preferences!.getBool('auth_signed_in') ?? false);
     _profileEmail = _isGuest
@@ -163,6 +170,8 @@ class AppState extends ChangeNotifier {
   }
 
   void markNextRoute(TransitRouteResult route) {
+    _cancelJourneyAutoCompletion();
+    unawaited(_removePersistedJourneyArrival());
     _nextRoute = route;
     _resumeNextJourneyPrompt = false;
     _journeyAlert = null;
@@ -178,6 +187,8 @@ class AppState extends ChangeNotifier {
 
   void clearNextRoute() {
     if (_nextRoute == null && !_resumeNextJourneyPrompt) return;
+    _cancelJourneyAutoCompletion();
+    unawaited(_removePersistedJourneyArrival());
     _nextRoute = null;
     _resumeNextJourneyPrompt = false;
     _journeyAlert = null;
@@ -318,32 +329,42 @@ class AppState extends ChangeNotifier {
 
   Future<bool> markNextJourneyDone() async {
     final route = _nextRoute;
-    if (route == null || !_journeyArrived) return false;
+    if (route == null || !_journeyArrived || _journeyCompletionInProgress) {
+      return false;
+    }
 
-    final journey = JourneyRecord(
-      id: _uuid.v4(),
-      from: route.fromStopName,
-      to: route.toStopName,
-      service: route.serviceName,
-      durationMinutes: route.durationMinutes,
-      createdAt: DateTime.now(),
-    );
-    _recentJourneys = _limitRecentJourneys([journey, ..._recentJourneys]);
-    await _database.saveJourneys(_recentJourneys);
-    await _syncJourneysToCloud();
+    _journeyCompletionInProgress = true;
+    _cancelJourneyAutoCompletion();
 
-    _nextRoute = null;
-    _resumeNextJourneyPrompt = false;
-    _journeyAlert = null;
-    _journeyRemainingStations = null;
-    _journeyArrived = false;
-    _journeyHasLocation = false;
-    _lastReachedStationIndex = -1;
-    _resetBusAssignment();
-    await _removePersistedNextRoute();
-    await stopJourneyMonitoring();
-    notifyListeners();
-    return true;
+    try {
+      final journey = JourneyRecord(
+        id: _uuid.v4(),
+        from: route.fromStopName,
+        to: route.toStopName,
+        service: route.serviceName,
+        durationMinutes: route.durationMinutes,
+        createdAt: DateTime.now(),
+      );
+      _recentJourneys = _limitRecentJourneys([journey, ..._recentJourneys]);
+      await _database.saveJourneys(_recentJourneys);
+      await _syncJourneysToCloud();
+
+      _nextRoute = null;
+      _resumeNextJourneyPrompt = false;
+      _journeyAlert = null;
+      _journeyRemainingStations = null;
+      _journeyArrived = false;
+      _journeyHasLocation = false;
+      _lastReachedStationIndex = -1;
+      _resetBusAssignment();
+      await _removePersistedNextRoute();
+      await _removePersistedJourneyArrival();
+      await stopJourneyMonitoring();
+      notifyListeners();
+      return true;
+    } finally {
+      _journeyCompletionInProgress = false;
+    }
   }
 
   Future<void> signIn({required String email, required String password}) async {
@@ -431,6 +452,8 @@ class AppState extends ChangeNotifier {
 
   Future<void> signOut() async {
     if (_supabaseService.isConfigured) await _supabaseService.signOut();
+    _cancelJourneyAutoCompletion();
+    unawaited(_removePersistedJourneyArrival());
     _isGuest = true;
     _profileName = 'Guest';
     _profileEmail = '';
@@ -536,6 +559,8 @@ class AppState extends ChangeNotifier {
     _notificationsEnabled = enabled;
     await _preferences?.setBool('notifications_enabled', enabled);
     if (!enabled) {
+      _cancelJourneyAutoCompletion();
+      unawaited(_removePersistedJourneyArrival());
       await stopJourneyMonitoring();
       _journeyAlert = null;
       _journeyRemainingStations = null;
@@ -921,6 +946,8 @@ class AppState extends ChangeNotifier {
     if (remaining == 0) {
       _journeyArrived = true;
       _publishJourneyAlert('Arrived at $destinationName.');
+      _rememberJourneyArrival();
+      _scheduleJourneyAutoCompletion();
       unawaited(stopJourneyMonitoring());
     } else if (nextService != null) {
       _publishJourneyAlert(
@@ -946,6 +973,75 @@ class AppState extends ChangeNotifier {
     _liveTransitVehicles = const [];
     _liveTransitUpdatedAt = null;
     _liveTransitError = null;
+  }
+
+  void _scheduleJourneyAutoCompletion({
+    Duration delay = const Duration(minutes: 5),
+  }) {
+    _journeyAutoCompleteTimer?.cancel();
+    _journeyAutoCompleteTimer = Timer(delay, () {
+      _journeyAutoCompleteTimer = null;
+      unawaited(_autoCompleteArrivedJourney());
+    });
+  }
+
+  void _cancelJourneyAutoCompletion() {
+    _journeyAutoCompleteTimer?.cancel();
+    _journeyAutoCompleteTimer = null;
+  }
+
+  Future<void> _autoCompleteArrivedJourney() async {
+    if (_nextRoute == null || !_journeyArrived) return;
+    try {
+      final completed = await markNextJourneyDone();
+      if (completed) {
+        await _notificationService.showJourneyAlert(
+          'Your journey was automatically marked as complete after 5 minutes.',
+        );
+      }
+    } catch (_) {
+      // Keep the arrived journey available for manual completion if saving fails.
+    }
+  }
+
+  void _rememberJourneyArrival() {
+    final preferences = _preferences;
+    if (preferences == null) return;
+    unawaited(
+      preferences.setInt(
+        _journeyArrivedAtStorageKey,
+        DateTime.now().toUtc().millisecondsSinceEpoch,
+      ),
+    );
+  }
+
+  void _restoreArrivedJourney(TransitRouteResult route) {
+    final preferences = _preferences;
+    final arrivedAtMillis = preferences?.getInt(_journeyArrivedAtStorageKey);
+    if (arrivedAtMillis == null) return;
+
+    final arrivedAt = DateTime.fromMillisecondsSinceEpoch(
+      arrivedAtMillis,
+      isUtc: true,
+    );
+    final elapsed = DateTime.now().toUtc().difference(arrivedAt);
+    final gracePeriod = const Duration(minutes: 5);
+    final remainingGrace = elapsed.isNegative
+        ? gracePeriod
+        : gracePeriod - elapsed;
+    final stations = _stationsForRoute(route);
+    _journeyArrived = true;
+    _journeyRemainingStations = 0;
+    _lastReachedStationIndex = stations.isEmpty ? -1 : stations.length - 1;
+    _scheduleJourneyAutoCompletion(
+      delay: remainingGrace.isNegative ? Duration.zero : remainingGrace,
+    );
+  }
+
+  Future<void> _removePersistedJourneyArrival() async {
+    final preferences = _preferences;
+    if (preferences == null) return;
+    await preferences.remove(_journeyArrivedAtStorageKey);
   }
 
   void _keepOnlyAssignedBus() {
@@ -1526,6 +1622,7 @@ class AppState extends ChangeNotifier {
     _transitDataService.dispose();
     _realtimeTransitService.dispose();
     _journeyPollingTimer?.cancel();
+    _journeyAutoCompleteTimer?.cancel();
     _realtimeTransitTimer?.cancel();
     unawaited(_locationService.stopTracking());
     super.dispose();

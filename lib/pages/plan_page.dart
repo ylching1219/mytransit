@@ -28,7 +28,7 @@ class _PlanPageState extends State<PlanPage> {
   @override
   void initState() {
     super.initState();
-    _fromController = TextEditingController(text: 'Current location');
+    _fromController = TextEditingController(text: 'KL Sentral');
     _toController = TextEditingController(text: 'Pasar Seni');
     _fromController.addListener(_onLocationTextChanged);
     _toController.addListener(_onLocationTextChanged);
@@ -61,6 +61,23 @@ class _PlanPageState extends State<PlanPage> {
 
   void _closeFromSuggestionsWhenToFocuses() {
     if (_toFocusNode.hasFocus) _fromFocusNode.unfocus();
+  }
+
+  void _swapLocations() {
+    FocusScope.of(context).unfocus();
+
+    final fromText = _fromController.text;
+    final toText = _toController.text;
+    _fromController.value = TextEditingValue(
+      text: toText,
+      selection: TextSelection.collapsed(offset: toText.length),
+    );
+    _toController.value = TextEditingValue(
+      text: fromText,
+      selection: TextSelection.collapsed(offset: fromText.length),
+    );
+
+    context.read<AppState>().resetJourneySearch();
   }
 
   String? _required(String? value) {
@@ -298,7 +315,7 @@ class _PlanPageState extends State<PlanPage> {
 
   void _resetPlan() {
     FocusScope.of(context).unfocus();
-    _fromController.text = 'Current location';
+    _fromController.text = 'KL Sentral';
     _toController.text = 'Pasar Seni';
     setState(() => _departureTime = null);
     context.read<AppState>().resetJourneySearch();
@@ -417,7 +434,35 @@ class _PlanPageState extends State<PlanPage> {
               suggestionsBuilder: (value) =>
                   _placeSuggestions(_fromController, value),
             ),
-            const SizedBox(height: 7),
+            const SizedBox(height: 3),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Semantics(
+                button: true,
+                label: 'Swap departure and destination',
+                child: Tooltip(
+                  message: 'Swap departure and destination',
+                  child: Material(
+                    color: appFieldSurface(context),
+                    shape: const CircleBorder(side: BorderSide(color: kTeal)),
+                    child: InkWell(
+                      onTap: _swapLocations,
+                      customBorder: const CircleBorder(),
+                      child: const SizedBox(
+                        width: 32,
+                        height: 32,
+                        child: Icon(
+                          Icons.swap_vert_rounded,
+                          size: 18,
+                          color: kTeal,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 3),
             RouteField(
               label: 'GOING TO',
               controller: _toController,

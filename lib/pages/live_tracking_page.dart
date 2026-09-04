@@ -713,7 +713,7 @@ class _TrackingStatusCard extends StatelessWidget {
               : '$remaining stations remaining'
         : 'Live tracking is paused';
     final subtitle = arrived
-        ? 'You have reached your destination.'
+        ? 'You have reached your destination. It will be marked complete automatically in 5 minutes if you do not tap the button.'
         : monitoring
         ? remaining == null && hasLocation
               ? 'Move closer to the starting stop to begin station alerts.'
