@@ -166,9 +166,7 @@ class _TransitRouteMapState extends State<TransitRouteMap> {
                     point: LatLng(vehicle.latitude, vehicle.longitude),
                     width: 118,
                     height: 40,
-                    // The marker point is the left-center of this label. Move
-                    // the label back so the bus/train icon, rather than the
-                    // whole label box, sits exactly on the feed GPS point.
+                   
                     alignment: Alignment.centerLeft,
                     child: Transform.translate(
                       offset: const Offset(-15, 0),

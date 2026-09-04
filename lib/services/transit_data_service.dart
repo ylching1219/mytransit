@@ -220,9 +220,7 @@ class TransitDataService {
     int? departureAfterSeconds,
     int? departureBeforeSeconds,
   }) async {
-    // A null departure time means "Any time".  It must still have a lower
-    // bound, otherwise the static GTFS feed can return departures from the
-    // beginning of the timetable, including services that already left.
+  
     final effectiveDepartureAfterSeconds =
         departureAfterSeconds ?? _currentMalaysiaSeconds();
 
@@ -237,8 +235,7 @@ class TransitDataService {
         ),
       );
     } catch (_) {
-      // Keep the static GTFS search as a fallback when the official planner is
-      // unavailable or does not recognise one of the entered places.
+    
     }
 
     List<TransitRouteResult> staticRoutes;
@@ -250,15 +247,12 @@ class TransitDataService {
         departureBeforeSeconds: departureBeforeSeconds,
       );
     } catch (_) {
-      // If the planner succeeded, its results are still useful even when the
-      // static schedule feed is temporarily unavailable.
+    
       if (plannerRoutes.isNotEmpty) return plannerRoutes;
       rethrow;
     }
 
-    // The Journey Planner gives the best place-to-place alternatives, while
-    // static GTFS contains every scheduled trip.  Keep both so Any time can
-    // show all departures after the current Malaysia time.
+
     final unique = <String, TransitRouteResult>{};
     for (final route in [...plannerRoutes, ...staticRoutes]) {
       final key = [
@@ -308,10 +302,7 @@ class TransitDataService {
       );
     }
 
-    // A typed value is often an area, mall, or landmark rather than an
-    // exact GTFS stop name. Resolve it through MyRapid geocoding, then search
-    // the nearest stops in both the bus and rail feeds. These nearby stops
-    // are also needed for the local bus-to-rail fallback.
+
     if (feeds.isNotEmpty) {
       final originStops = await _resolveStopCandidates(from, feeds);
       final destinationStops = await _resolveStopCandidates(to, feeds);
@@ -401,13 +392,6 @@ class TransitDataService {
     return routes.isEmpty ? null : routes.first;
   }
 
-  /// Returns the realtime feed's internal route IDs for the bus services in
-  /// [route]. The Journey Planner and GTFS-realtime feeds do not always use
-  /// the same ID namespace, so the public service code is resolved through
-  /// the official static GTFS routes file first.
-  ///
-  /// Matching is deliberately based on the complete public service code:
-  /// `T250` and `250` remain different services.
   Future<Set<String>> realtimeBusRouteIdsFor(TransitRouteResult route) async {
     final busLegs = route.legs.where((leg) => leg.mode == 'Bus').toList();
     final serviceNames = <String>{
@@ -458,10 +442,7 @@ class TransitDataService {
     return realtimeRouteIds;
   }
 
-  /// Returns the official Rapid Bus stop catalogue used by the realtime feed.
-  /// The journey planner and the vehicle feed can use different stop-ID
-  /// namespaces, so live stop names must be resolved from this catalogue
-  /// before falling back to a route station or GPS estimate.
+
   Future<Map<String, TransitStationPoint>> realtimeBusStopLookup() async {
     late final _GtfsFeed feed;
     try {
@@ -472,10 +453,7 @@ class TransitDataService {
     return _stopLookup(feed, feed.stops.keys);
   }
 
-  /// Returns only stops used by the selected Rapid Bus route IDs. This is a
-  /// better GPS fallback than comparing a vehicle with every bus stop in the
-  /// city, while still falling back to the complete catalogue when a route
-  /// cannot be resolved.
+
   Future<Map<String, TransitStationPoint>> realtimeBusStopLookupForRoutes(
     Set<String> routeIds,
   ) async {
@@ -1336,16 +1314,12 @@ class TransitDataService {
         break;
       }
     }
-    // The planner's top-level departure can be the requested search time,
-    // rather than the actual first service departure.
-    // Use the first transit leg so schedule results show the real departure.
+ 
     final routeDeparture = firstTransit.departureTime;
     final routeArrival =
         _plannerTimeOfDay(route['estimated_arrival_time']) ??
         lastLeg.arrivalTime;
-    // MyRapid's total_duration is based on seconds from midnight and can
-    // include the wait from the requested search time. Calculate the useful
-    // journey duration from the actual first service to the final arrival.
+
     final durationMinutes = _minutesBetween(routeDeparture, routeArrival);
 
     return TransitRouteResult(
@@ -1812,8 +1786,7 @@ class TransitDataService {
     required String fromStopId,
     required String toStopId,
   }) async {
-    // The public fare endpoint supports rail station IDs. Rapid KL bus
-    // fares are zone-based and the bus GTFS feed does not publish zone IDs.
+
     if (int.tryParse(fromStopId) != null && int.tryParse(toStopId) != null) {
       return null;
     }
@@ -2327,9 +2300,7 @@ const _requiredFiles = {
 };
 
 String _inferMode(String routeName, String fallbackMode) {
-  // The bus feed can contain route names such as "MRT feeder" or
-  // "LRT connection". The feed source is authoritative for the vehicle
-  // type, so never reclassify a bus route from words in its display name.
+
   if (fallbackMode == 'Bus') return 'Bus';
   final name = routeName.toLowerCase();
   if (name.contains('mrt')) return 'MRT';
@@ -2418,10 +2389,7 @@ class _GtfsFeed {
       final id = row['route_id'] ?? '';
       if (id.isEmpty) continue;
       routes[id] = _GtfsRoute(
-        // Use the public service code (for example T250 or 250) as the
-        // compact label shown in route cards. The long name contains the
-        // line's terminal pair and is useful as supporting information, but
-        // it can be misleading when it is displayed as the selected service.
+   
         displayName: (row['route_short_name'] ?? '').trim().isNotEmpty
             ? row['route_short_name']!.trim()
             : ((row['route_long_name'] ?? '').trim().isNotEmpty

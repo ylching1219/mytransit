@@ -115,9 +115,6 @@ class RealtimeTransitService {
       busStopLookup,
     );
     if (kioskResult.vehicles.isEmpty && routeIds.isNotEmpty) {
-      // The kiosk accepts internal route IDs, but those IDs can change while
-      // a planner route is still valid. Retry once without a route filter and
-      // apply the public-code aliases below to the returned vehicles.
       final broadResult = await _fetchKioskFeed(
         routeStations,
         const {},
@@ -128,8 +125,6 @@ class RealtimeTransitService {
     if (kioskResult.error == null && kioskResult.vehicles.isNotEmpty) {
       results.add(kioskResult);
     } else {
-      // Keep the government GTFS-realtime endpoint as a fallback if the
-      // Prasarana kiosk socket is temporarily unavailable.
       final fallbackResult = await _fetchFeed(
         _busEndpoint,
         routeStations,
@@ -285,7 +280,6 @@ class RealtimeTransitService {
       try {
         await channel?.sink.close();
       } catch (_) {
-        // The socket may already be closed after the first kiosk response.
       }
     }
   }
@@ -480,8 +474,6 @@ class RealtimeTransitService {
       aliases
         ..add('$prefix${number}0')
         ..add('$prefix${number}8');
-      // Some planner responses already expose the kiosk's trailing-zero
-      // internal ID instead of the public service code.
       if (key.endsWith('0') && number.length > 3) {
         aliases.add(key.substring(0, key.length - 1));
       }
@@ -602,9 +594,6 @@ class RealtimeTransitService {
         nearest = station;
       }
     }
-    // A route can contain only a subset of stops, and planner/feed IDs are
-    // not always from the same namespace. Never display a distant planner
-    // stop as if the vehicle were there.
     return nearestDistance <= 250 ? nearest : null;
   }
 

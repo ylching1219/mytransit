@@ -79,7 +79,6 @@ class NotificationService {
         notificationDetails: details,
       );
     } catch (_) {
-      // Keep journey monitoring alive if the device blocks notifications.
     }
   }
 }

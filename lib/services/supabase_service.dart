@@ -152,8 +152,6 @@ class SupabaseService {
           onConflict: 'id',
         );
 
-    // Remove only rows that are no longer part of the capped local history,
-    // and do it after the current records have been uploaded successfully.
     for (final staleId in existingIds.difference(currentIds)) {
       await _client
           .from('journeys')
