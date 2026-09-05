@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-
 import '../models/transit_models.dart';
 import '../providers/app_state.dart';
 import '../widgets/smart_move_widgets.dart';
 import 'auth_page.dart';
 import 'route_results_page.dart';
+
 
 class SavedPage extends StatefulWidget {
   final ValueChanged<String> onMessage;
@@ -131,7 +131,7 @@ class _SavedPageState extends State<SavedPage> {
             )
           else
             ...visibleFavorites.map(
-              (place) => Padding(
+                  (place) => Padding(
                 padding: const EdgeInsets.only(bottom: 7),
                 child: Dismissible(
                   key: ValueKey(place.id),
@@ -223,7 +223,7 @@ class _SavedPageState extends State<SavedPage> {
             )
           else
             ...state.recentJourneys.map(
-              (journey) => Padding(
+                  (journey) => Padding(
                 padding: const EdgeInsets.only(bottom: 7),
                 child: SavedItem(
                   icon: _journeyIcon(journey.service),
@@ -231,7 +231,7 @@ class _SavedPageState extends State<SavedPage> {
                   eyebrow: _dayLabel(journey),
                   title: '${journey.from} → ${journey.to}',
                   subtitle:
-                      '${journey.service} · ${journey.durationMinutes} min',
+                  '${journey.service} · ${journey.durationMinutes} min',
                   onTap: () => _searchSavedRoute(
                     context,
                     from: journey.from,
@@ -283,10 +283,10 @@ class _SavedPageState extends State<SavedPage> {
   }
 
   Future<void> _searchSavedRoute(
-    BuildContext context, {
-    required String from,
-    required String to,
-  }) async {
+      BuildContext context, {
+        required String from,
+        required String to,
+      }) async {
     final state = context.read<AppState>();
     widget.onMessage('Finding routes from $from to $to...');
     final found = await state.planJourney(from: from, to: to);
@@ -306,9 +306,9 @@ class _SavedPageState extends State<SavedPage> {
   }
 
   Future<bool> _confirmRemoveFavoriteDialog(
-    BuildContext context,
-    SavedPlace place,
-  ) async {
+      BuildContext context,
+      SavedPlace place,
+      ) async {
     final remove = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
