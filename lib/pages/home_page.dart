@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../providers/app_state.dart';
 import '../services/transit_data_service.dart';
 import '../widgets/smart_move_widgets.dart';
