@@ -191,6 +191,7 @@ class _MyTransitAssistAppState extends State<MyTransitAssistApp>
           child: child ?? const SizedBox.shrink(),
         );
       },
+      routes: {'/service-alerts': (_) => const ServiceAlertsPage()},
       home: const MyTransitAssistShell(),
     );
   }
@@ -284,11 +285,8 @@ class MyTransitAssistShell extends StatelessWidget {
               onPlanTap: () => state.selectTab(1),
               onSavedTap: () => state.selectTab(2),
               onHistoryTap: () => state.selectTab(2),
-              onAlertsTap: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const ServiceAlertsPage()),
-                );
-              },
+              onAlertsTap: () =>
+                  Navigator.of(context).pushNamed('/service-alerts'),
               onMessage: (message) => _showMessage(context, message),
             ),
             PlanPage(onMessage: (message) => _showMessage(context, message)),

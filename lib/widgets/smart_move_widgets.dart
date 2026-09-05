@@ -122,6 +122,8 @@ class _AppHeaderState extends State<AppHeader> {
         ? widget.title
         : '${greetingForHour(_now.hour)}, ${widget.greetingName}';
     final theme = Theme.of(context);
+    final isServiceAlertsPage =
+        ModalRoute.of(context)?.settings.name == '/service-alerts';
     return Padding(
       padding: const EdgeInsets.fromLTRB(7, 17, 7, 0),
       child: Row(
@@ -149,10 +151,18 @@ class _AppHeaderState extends State<AppHeader> {
             ],
           ),
           const Spacer(),
-          Icon(
-            Icons.notifications_none_rounded,
-            size: 19,
-            color: theme.colorScheme.onSurfaceVariant,
+          IconButton(
+            onPressed: isServiceAlertsPage
+                ? null
+                : () => Navigator.of(context).pushNamed('/service-alerts'),
+            tooltip: 'Live service alerts',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            icon: Icon(
+              Icons.notifications_none_rounded,
+              size: 19,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
         ],
       ),
